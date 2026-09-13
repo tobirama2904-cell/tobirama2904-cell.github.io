@@ -97,24 +97,24 @@ export function Sidebar() {
       {MOBILE_TABS.slice(0, 2).map(href => {
         const n = NAV.find(x => x.href === href)!;
         const active = isActive(n.href);
-        return <Link key={n.href} href={n.href} className={`relative flex flex-col items-center gap-0.5 px-4 py-1.5 rounded-xl text-[10px] font-bold ${active ? 'text-blue-600 dark:text-blue-400' : 'text-zinc-400'}`}>
-          <n.icon size={22} />{n.label}
+        return <Link key={n.href} href={n.href} className={`relative flex flex-col items-center gap-0.5 px-1 py-1.5 rounded-xl text-[9px] font-bold flex-1 min-w-0 ${active ? 'text-blue-600 dark:text-blue-400' : 'text-zinc-400'}`}>
+          <n.icon size={20} className="shrink-0" /><span className="truncate max-w-full leading-tight">{n.label}</span>
           {n.href === '/messages' && unread > 0 && <span className="absolute top-0 right-2 text-[10px] bg-rose-500 text-white rounded-full min-w-5 h-5 grid place-items-center px-1 font-bold">{unread}</span>}
         </Link>;
       })}
-      <Link href="/create" className="flex flex-col items-center gap-0.5 px-4 -mt-6">
+      <Link href="/create" className="flex flex-1 min-w-0 flex-col items-center gap-0.5 px-1 -mt-6">
         <span className={`size-13 w-[52px] h-[52px] grid place-items-center rounded-2xl text-white shadow-xl shadow-blue-600/30 ${isActive('/create') ? 'bg-blue-500' : 'bg-gradient-to-br from-blue-600 to-cyan-500'}`}><Plus size={24} /></span>
-        <span className={`text-[10px] font-bold ${isActive('/create') ? 'text-blue-600 dark:text-blue-400' : 'text-zinc-400'}`}>Создать</span>
+        <span className={`text-[9px] font-bold truncate max-w-full ${isActive('/create') ? 'text-blue-600 dark:text-blue-400' : 'text-zinc-400'}`}>Создать</span>
       </Link>
       {MOBILE_TABS.slice(2).filter(h => h !== '/create').map(href => {
         const n = NAV.find(x => x.href === href)!;
         const active = isActive(n.href);
-        return <Link key={n.href} href={n.href} className={`flex flex-col items-center gap-0.5 px-4 py-1.5 rounded-xl text-[10px] font-bold ${active ? 'text-blue-600 dark:text-blue-400' : 'text-zinc-400'}`}>
-          <n.icon size={22} />{n.label}
+        return <Link key={n.href} href={n.href} className={`flex flex-col items-center gap-0.5 px-1 py-1.5 rounded-xl text-[9px] font-bold flex-1 min-w-0 ${active ? 'text-blue-600 dark:text-blue-400' : 'text-zinc-400'}`}>
+          <n.icon size={20} className="shrink-0" /><span className="truncate max-w-full leading-tight">{n.label}</span>
         </Link>;
       })}
-      <button onClick={() => setSheet(true)} className="flex flex-col items-center gap-0.5 px-4 py-1.5 rounded-xl text-[10px] font-bold text-zinc-400">
-        <span className="grid grid-cols-2 gap-[3px] p-[3px]">{[0, 1, 2, 3].map(i => <span key={i} className="size-[7px] rounded-[2px] bg-current" />)}</span>Ещё
+      <button onClick={() => setSheet(true)} className="flex flex-col items-center gap-0.5 px-1 py-1.5 rounded-xl text-[9px] font-bold text-zinc-400 flex-1 min-w-0">
+        <span className="grid grid-cols-2 gap-[3px] p-[3px] shrink-0">{[0, 1, 2, 3].map(i => <span key={i} className="size-[7px] rounded-[2px] bg-current" />)}</span><span className="truncate">Ещё</span>
       </button>
     </nav>
     {/* mobile "more" sheet */}

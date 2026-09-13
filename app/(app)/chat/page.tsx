@@ -40,7 +40,7 @@ function Thread({ bot, apiKey, meName, uid }: { bot: BotT | null; apiKey: string
   const send = () => { if (!input.trim() || status === 'streaming') return; sendMessage({ text: input.trim() }); setInput(''); };
   const busy = status === 'streaming' || status === 'submitted';
   return <>
-    <div ref={parent} className="flex-1 overflow-y-auto rounded-2xl glass p-4 flex flex-col gap-3 chat-scroll">
+    <div ref={parent} className="min-h-0 flex-1 overflow-y-auto rounded-2xl glass p-4 flex flex-col gap-3 chat-scroll">
       {messages.length === 0 && <Empty icon="◈" title={bot ? `Это ${bot.name}` : 'Привет! Я LEGION'} sub={bot?.persona || 'Спроси что угодно. Умею погоду, курсы, новости, время — и просто болтать.'} />}
       {messages.map(m => <div key={m.id} className={`max-w-[88%] animate-[msgIn_.35s_cubic-bezier(.34,1.56,.64,1)] ${m.role === 'user' ? 'self-end' : 'self-start'}`}>
         <div className="text-[10px] font-bold tracking-widest text-zinc-400 mb-1">{m.role === 'user' ? meName : (bot?.name || 'LEGION')}</div>
