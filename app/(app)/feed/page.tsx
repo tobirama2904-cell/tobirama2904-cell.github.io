@@ -83,7 +83,7 @@ export default function FeedPage() {
   const [feedVotes, setFeedVotes] = useState<Record<string, { counts: number[]; mine: number; total: number }>>({});
   const [trans, setTrans] = useState<Record<string, string>>({});
   const [transBusy, setTransBusy] = useState('');
-  const [tagView, setTagView] = useState<{ tag: string; posts: Post[] } | null>(null);
+  const [tagView, setTagView] = useState<{ tag: string; posts: Post[]; done?: boolean } | null>(null);
   const [evForm, setEvForm] = useState(false);
   const [ev, setEv] = useState({ title: '', at: '', place: '', about: '' });
   const [anim] = useAutoAnimate();
@@ -246,8 +246,12 @@ export default function FeedPage() {
   const openTag = async (tag: string) => {
     setTagView({ tag, posts: [] });
     try {
-      const ps = await getPostsByTag(tag);
-      setTagView({ tag, posts: ps });
+      let ps: Post[] = [];
+      for (let i = 0; i < 3 && ps.length === 0; i++) {
+        ps = await getPostsByTag(tag);
+        if (ps.length === 0 && i < 2) await new Promise(r => setTimeout(r, 4000));
+      }
+      setTagView({ tag, posts: ps, done: true });
       const ids = [...new Set(ps.map(p => p.author_id))].filter(id => !profs[id]);
       if (ids.length) {
         const rows = await Promise.all(ids.slice(0, 30).map(id => getProfile(id).catch(() => null)));
@@ -255,7 +259,7 @@ export default function FeedPage() {
         rows.forEach(x => { if (x) m[x.id] = x; });
         setProfs(prev => ({ ...prev, ...m }));
       }
-    } catch { setTagView({ tag, posts: [] }); }
+    } catch { setTagView({ tag, posts: [], done: true }); }
   };
   const createEvent = async () => {
     if (!ev.title.trim() || !logged) return;
@@ -310,7 +314,8 @@ export default function FeedPage() {
           <p className="mt-0.5 whitespace-pre-wrap">{p.text.slice(0, 300)}</p>
           {p.image_url && <img src={p.image_url} alt="" className="mt-1.5 rounded-lg max-h-40 object-cover" />}
         </div>)}
-        {tagView.posts.length === 0 && <div className="text-sm text-zinc-500 text-center py-3">Ищу по релеям…</div>}
+        {tagView.posts.length === 0 && !tagView.done && <div className="text-sm text-zinc-500 text-center py-3">Ищу по релеям…</div>}
+        {tagView.posts.length === 0 && tagView.done && <div className="text-sm text-zinc-500 text-center py-3">Ничего не найдено <button onClick={() => openTag(tagView.tag)} className="text-blue-500 font-bold">↻ Повторить</button></div>}
       </div>
     </div>}
     {tab === 'feed' && <div ref={anim} className="flex flex-col gap-3 mt-3 pb-10">

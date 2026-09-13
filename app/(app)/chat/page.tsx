@@ -14,16 +14,27 @@ import { DictateButton } from '@/components/dictate';
 function apiKey(): string {
   try { return localStorage.getItem('legion-agnes-key') || ''; } catch { return ''; }
 }
-function Thread({ bot, apiKey, meName }: { bot: BotT | null; apiKey: string; meName: string }) {
+function Thread({ bot, apiKey, meName, uid }: { bot: BotT | null; apiKey: string; meName: string; uid: string }) {
   const [parent] = useAutoAnimate();
   const bottom = useRef<HTMLDivElement>(null);
+  const storeKey = `legion-ai-hist-${uid || 'guest'}-${bot?.id || 'legion'}`;
+  const [initial] = useState(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(storeKey) || '[]');
+      return Array.isArray(raw) ? raw.filter(m => m && m.role && m.parts) : [];
+    } catch { return []; }
+  });
   const { messages, sendMessage, status, error } = useChat({
+    messages: initial as never,
     transport: new DefaultChatTransport({
       api: '/api/chat',
       body: { system: bot?.system || undefined, apiKey: apiKey || undefined },
     }),
     onError: () => {},
   });
+  useEffect(() => {
+    try { localStorage.setItem(storeKey, JSON.stringify(messages.slice(-100))); } catch {}
+  }, [messages, storeKey]);
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages.length, status]);
   const [input, setInput] = useState('');
   const send = () => { if (!input.trim() || status === 'streaming') return; sendMessage({ text: input.trim() }); setInput(''); };
@@ -67,12 +78,13 @@ export default function ChatPage() {
         {bots.map(b => <option key={b.id} value={b.id}>🤖 {b.name}</option>)}
       </select>}
       <div className="ml-auto flex gap-2">
+        <Button size="sm" variant="ghost" onClick={() => { try { Object.keys(localStorage).filter(k => k.startsWith('legion-ai-hist-')).forEach(k => localStorage.removeItem(k)); } catch {} location.reload(); }}>🧹 Очистить</Button>
         <Button size="sm" variant="outline" onClick={() => setShowKey(!showKey)}><KeyRound size={14} /> Ключ</Button>
       </div>
     </div>
     {showKey && <div className="mb-3 rounded-xl glass p-3 flex gap-2">
       <input value={key} onChange={e => { setKey(e.target.value); try { localStorage.setItem('legion-agnes-key', e.target.value); } catch {} }} placeholder="Agnes API key (sk-...)" type="password" className="flex-1 bg-transparent outline-none text-sm font-mono" />
     </div>}
-    <Thread key={(bot?.id || 'legion') + '|' + key} bot={bot} apiKey={key} meName={me?.name || 'ВЫ'} />
+    <Thread key={(bot?.id || 'legion') + '|' + key + '|' + (me?.id || 'guest')} bot={bot} apiKey={key} meName={me?.name || 'ВЫ'} uid={me?.id || 'guest'} />
   </div>;
 }

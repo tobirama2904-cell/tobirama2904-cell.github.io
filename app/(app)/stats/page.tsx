@@ -55,7 +55,7 @@ export default function StatsPage() {
     <div className="grid lg:grid-cols-2 gap-3 mt-3">
       <div className="glass rounded-2xl p-4"><b className="text-sm">Чаты по дням</b><MsgChart data={series} /></div>
       <div className="glass rounded-2xl p-4"><b className="text-sm">Посты по дням</b><PostsBars data={series} /></div>
-      <div className="glass rounded-2xl p-4"><b className="text-sm">Микс активности</b><MixPie /></div>
+      <div className="glass rounded-2xl p-4"><b className="text-sm">Микс активности</b><MixPie data={[{ n: 'Посты', v: counts.posts }, { n: 'Чаты', v: counts.chats }, { n: 'Люди', v: counts.people }, { n: 'Истории', v: counts.stories }]} /></div>
       <div className="glass rounded-2xl p-4"><b className="text-sm">Активных дней из 7</b><VoiceGauge value={Math.round(activeDays / 7 * 100)} /></div>
     </div>
   </div>;

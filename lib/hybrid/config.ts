@@ -13,7 +13,7 @@ export const RELAYS = [
 ];
 export const READ_RELAYS = RELAYS.slice(0, 5);
 // NIP-29 relay-based group chats (public groups directory)
-export const GROUP_RELAYS = ['wss://groups.fiatjaf.com'];
+export const GROUP_RELAYS = ['wss://groups.fiatjaf.com', 'wss://relay.0xchat.com'];
 // WebSocket trackers for in-browser torrents (big files, serverless)
 export const WS_TRACKERS = [
   'wss://tracker.openwebtorrent.com',

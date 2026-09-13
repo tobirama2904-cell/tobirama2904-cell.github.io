@@ -25,7 +25,7 @@ const NAV = [
   { href: '/users', icon: Users, label: 'Люди', k: '' },
   { href: '/bots', icon: Sparkles, label: 'Боты', k: '' },
 ];
-const MOBILE_TABS = ['/feed', '/messages', '/create', '/clips'];
+const MOBILE_TABS = ['/chat', '/feed', '/messages', '/create', '/clips'];
 
 export function Sidebar() {
   const path = usePathname(), router = useRouter();
@@ -51,7 +51,7 @@ export function Sidebar() {
     <aside className="hidden lg:flex w-64 shrink-0 flex-col gap-1 p-3 border-r border-zinc-200 dark:border-white/10 bg-white/60 dark:bg-black/30 backdrop-blur-2xl h-screen sticky top-0 overflow-y-auto">
       <Link href="/" className="flex items-center gap-2.5 px-2 py-3">
         <div className="size-9 rounded-xl bg-gradient-to-br from-blue-600 to-cyan-400 grid place-items-center text-white font-display font-bold shadow-lg shadow-blue-600/30">◈</div>
-        <div className="leading-none"><div className="font-display font-bold tracking-widest text-[15px]">LEGION</div><div className="text-[10px] text-zinc-500 font-bold tracking-[.2em]">SOCIAL · v22</div></div>
+        <div className="leading-none"><div className="font-display font-bold tracking-widest text-[15px]">LEGION</div><div className="text-[10px] text-zinc-500 font-bold tracking-[.2em]">SOCIAL · v23</div></div>
         {!cloud && <Badge className="ml-auto">гость</Badge>}
       </Link>
       <nav className="flex flex-col gap-0.5 mt-1">

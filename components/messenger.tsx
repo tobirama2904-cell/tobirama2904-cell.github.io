@@ -12,6 +12,7 @@ import {
   listConvos, ensureDm, createGroup, touchConvo, sendDm, sendGroup, sendNip29,
   listConvoMessages, subConvo, addMember, removeMember, listReacts, setReact, togglePin,
   listNip29, joinNip29, votePoll, getPollVotes, type ConvoEntry, type Nip29Group,
+  listLegionChannels, joinLegionChannel, type LegionChannel,
 } from '@/lib/hybrid/dm';
 import { directory, resolveAccount, getProfile } from '@/lib/hybrid/social';
 import type { Profile } from '@/lib/supabase/types';
@@ -55,6 +56,8 @@ export function Messenger() {
   const [showNew, setShowNew] = useState(false);
   const [showNip29, setShowNip29] = useState(false);
   const [nip29list, setNip29list] = useState<Nip29Group[]>([]);
+  const [legionCh, setLegionCh] = useState<LegionChannel[]>([]);
+  const [catQ, setCatQ] = useState('');
   const [groupName, setGroupName] = useState('');
   const [newKind, setNewKind] = useState<'group' | 'channel'>('group');
   const [people, setPeople] = useState<Profile[]>([]);
@@ -364,12 +367,18 @@ export function Messenger() {
   const createNewGroup = () => {
     if (!groupName.trim()) return;
     const c = createGroup(newKind, groupName.trim());
-    if (c) { setGroupName(''); setShowNew(false); refreshConvos(); setActive(c.id); setShowMembers(true); }
+    if (c) { setGroupName(''); setShowNew(false); refreshConvos(); setActive(c.id); if (newKind === 'group') setShowMembers(true); }
+  };
+  const loadCatalog = () => {
+    listLegionChannels().then(setLegionCh).catch(() => {});
+    listNip29().then(setNip29list).catch(() => {});
   };
   const openNip29dir = async () => {
     setShowNip29(true);
     setNip29list([]);
-    try { setNip29list(await listNip29()); } catch {}
+    setLegionCh([]);
+    setCatQ('');
+    loadCatalog();
   };
   const onType = () => {
     if (!myPub || !activeConvo || !me) return;
@@ -406,7 +415,7 @@ export function Messenger() {
     <div className={`w-full sm:w-72 shrink-0 flex-col gap-1 ${active ? 'hidden sm:flex' : 'flex'}`}>
       <div className="flex gap-2 mb-1">
         <Button className="flex-1" onClick={loadPeople}><Plus size={15} /> Новый чат</Button>
-        <Button variant="outline" title="Публичные группы (NIP-29)" onClick={openNip29dir}><Globe size={15} /></Button>
+        <Button variant="outline" title="Каталог: группы и каналы" onClick={openNip29dir}><Globe size={15} /></Button>
       </div>
       {convos.length === 0 && <Empty icon="💬" title="Чатов нет" sub="Нажми «Новый чат» — там живые люди сети" />}
       <div className="flex flex-col gap-1 overflow-y-auto">
@@ -579,13 +588,21 @@ export function Messenger() {
       </div>
     </Dialog>
     {/* NIP-29 directory */}
-    <Dialog open={showNip29} onOpenChange={setShowNip29} title="🌐 Публичные группы">
-      <div className="flex flex-col gap-2">
-        {nip29list.map(g => <div key={g.relay + g.id} className="flex items-center gap-2.5 rounded-2xl border border-zinc-200 dark:border-white/10 p-3">
+    <Dialog open={showNip29} onOpenChange={setShowNip29} title="🌐 Каталог · группы и каналы">
+      <div className="flex flex-col gap-2 max-h-[70vh] overflow-y-auto">
+        <div className="flex gap-2"><input value={catQ} onChange={e => setCatQ(e.target.value)} placeholder="🔍 Найти группу или канал…" className="flex-1 h-10 rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-3.5 text-sm outline-none" /><Button variant="outline" size="sm" title="Обновить каталог" onClick={loadCatalog}>↻</Button></div>
+        <div className="text-[11px] font-bold tracking-widest text-zinc-400 mt-1">LEGION · НАШИ</div>
+        {legionCh.filter(c => !catQ.trim() || c.title.toLowerCase().includes(catQ.trim().toLowerCase())).map(c => <div key={c.room} className="flex items-center gap-2.5 rounded-2xl border border-zinc-200 dark:border-white/10 p-3">
+          <div className="min-w-0 flex-1"><b className="text-sm">{c.kind === 'channel' ? '📣 ' : '👥 '}{c.title}</b><div className="text-xs text-zinc-500 truncate">{c.kind === 'channel' ? 'канал' : 'группа'} · {c.room.slice(0, 18)}…</div></div>
+          <Button size="sm" onClick={() => { const ch = joinLegionChannel(c); refreshConvos(); setActive(ch.id); setShowNip29(false); }}>Войти</Button>
+        </div>)}
+        {legionCh.length === 0 && <div className="text-sm text-zinc-500 text-center py-2">Ищу наши каналы на релеях…</div>}
+        <div className="text-[11px] font-bold tracking-widest text-zinc-400 mt-1">NOSTR · ПУБЛИЧНЫЕ (NIP-29)</div>
+        {nip29list.filter(g => !catQ.trim() || (g.name + g.about).toLowerCase().includes(catQ.trim().toLowerCase())).map(g => <div key={g.relay + g.id} className="flex items-center gap-2.5 rounded-2xl border border-zinc-200 dark:border-white/10 p-3">
           <div className="min-w-0 flex-1"><b className="text-sm">{g.name}</b><div className="text-xs text-zinc-500 truncate">{g.about || g.relay}</div></div>
           <Button size="sm" onClick={() => { const c = joinNip29(g); refreshConvos(); setActive(c.id); setShowNip29(false); }}>Войти</Button>
         </div>)}
-        {nip29list.length === 0 && <div className="text-sm text-zinc-500 text-center py-4">Загружаю каталог…</div>}
+        {nip29list.length === 0 && <div className="text-sm text-zinc-500 text-center py-2">Загружаю NIP-29…</div>}
       </div>
     </Dialog>
     {/* poll composer */}
