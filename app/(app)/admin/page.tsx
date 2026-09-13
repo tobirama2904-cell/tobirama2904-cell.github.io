@@ -8,7 +8,7 @@ import { Tabs } from '@/components/ui/overlays';
 import { MsgChart } from '@/components/charts';
 import { timeAgo } from '@/lib/utils';
 import {
-  directory, searchProfiles, getProfile, getPosts, deletePost, getReports,
+  directory, searchProfiles, searchPosts, getProfile, getPosts, deletePost, getReports,
   resolveReportLocal, publishAnnouncement, getActivity, relayHealth,
   announceAdmin, listBots, createBot, setBotPublic, deleteBotAny,
   type ActItem, type BotRow,
@@ -17,7 +17,7 @@ import { readGhostDMs, listConvos } from '@/lib/hybrid/dm';
 import { onOnline } from '@/lib/hybrid/live';
 import { loadBanlist, applyMod, publishNow } from '@/lib/hybrid/banlist';
 import { addTomb } from '@/lib/hybrid/social';
-import type { Profile, Report } from '@/lib/supabase/types';
+import type { Profile, Post, Report } from '@/lib/supabase/types';
 
 type GhostGroup = { key: string; a: string; b: string; msgs: { id: string; sender: string; peer: string; kind: string; text: string; media: string | null; created_at: string }[] };
 
@@ -25,7 +25,13 @@ export default function AdminPage() {
   const me = useStore(s => s.me);
   const [tab, setTab] = useState('dash');
   const [users, setUsers] = useState<Profile[]>([]);
-  const [acts, setActs] = useState<{ id: string; uid: string; text: string; at: string }[]>([]);
+  const [acts, setActs] = useState<{ id: string; uid: string; type: string; text: string; at: string }[]>([]);
+  const [actFilter, setActFilter] = useState('all');
+  const [actUser, setActUser] = useState('');
+  const [sq, setSq] = useState('');
+  const [sUsers, setSUsers] = useState<Profile[]>([]);
+  const [sPosts, setSPosts] = useState<Post[]>([]);
+  const [sBusy, setSBusy] = useState(false);
   const [reports, setReports] = useState<Report[]>([]);
   const [counts, setCounts] = useState({ users: 0, posts: 0, open: 0, ghosts: 0 });
   const [q, setQ] = useState('');
@@ -79,7 +85,7 @@ export default function AdminPage() {
       setGhosts(ghs);
       setBots(botsAll);
       if (blist) setBl({ admins: blist.admins, banned: blist.banned, verified: blist.verified, hidden: blist.hidden || [] });
-      setActs(actsMerged.map(a => ({ id: a.id, uid: a.uid, text: a.text, at: a.at })));
+      setActs(actsMerged.map(a => ({ id: a.id, uid: a.uid, type: a.type, text: a.text, at: a.at })));
       setCounts({ users: allUsers.length, posts: ps.length, open: reps.filter(r => r.status === 'open').length, ghosts: ghs.reduce((n, g) => n + g.msgs.length, 0) });
       const days = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
       const buckets = Array.from({ length: 7 }, (_, i) => { const dt = new Date(Date.now() - (6 - i) * 864e3); return { key: dt.toDateString(), d: days[dt.getDay()], msg: 0 }; });
@@ -110,6 +116,18 @@ export default function AdminPage() {
       } catch {}
     }
   }, [me, load]);
+  useEffect(() => {
+    if (tab !== 'search' || !sq.trim()) return;
+    setSBusy(true);
+    const t = setTimeout(async () => {
+      try {
+        const [us, ps] = await Promise.all([searchProfiles(sq.trim()).catch((): Profile[] => []), searchPosts(sq.trim()).catch((): Post[] => [])]);
+        setSUsers(us);
+        setSPosts(ps);
+      } catch {} finally { setSBusy(false); }
+    }, 600);
+    return () => clearTimeout(t);
+  }, [sq, tab]);
   useEffect(() => {
     if (!q.trim() || tab !== 'users') return;
     const t = setTimeout(() => {
@@ -175,7 +193,7 @@ export default function AdminPage() {
   return <div className="max-w-5xl mx-auto">
     <h1 className="font-display font-bold text-xl mb-3 flex items-center gap-2"><ShieldCheck className="text-amber-500" /> Админка <span className="text-xs font-sans text-zinc-500">· {me.email}</span>
       <Button size="sm" variant="outline" className="ml-auto" onClick={load}>↻ Обновить</Button></h1>
-    <Tabs value={tab} onValue={setTab} tabs={[{ v: 'dash', label: '📊 Обзор' }, { v: 'users', label: `👥 Юзеры (${counts.users})` }, { v: 'acts', label: '⚡ Активность' }, { v: 'mod', label: `🚩 Жалобы (${counts.open})` }, { v: 'audit', label: `👁 DM-аудит (${counts.ghosts})` }, { v: 'bots', label: `🤖 Боты (${bots.length})` }, { v: 'net', label: '📡 Сеть' }, { v: 'ann', label: '📢 Рассылка' }, { v: 'tg', label: '✈️ Telegram' }, { v: 'ban', label: '📜 Банлист' }]} />
+    <Tabs value={tab} onValue={setTab} tabs={[{ v: 'dash', label: '📊 Обзор' }, { v: 'users', label: `👥 Юзеры (${counts.users})` }, { v: 'acts', label: '⚡ Активность' }, { v: 'search', label: '🔍 Поиск' }, { v: 'mod', label: `🚩 Жалобы (${counts.open})` }, { v: 'audit', label: `👁 DM-аудит (${counts.ghosts})` }, { v: 'bots', label: `🤖 Боты (${bots.length})` }, { v: 'net', label: '📡 Сеть' }, { v: 'ann', label: '📢 Рассылка' }, { v: 'tg', label: '✈️ Telegram' }, { v: 'ban', label: '📜 Банлист' }]} />
     {annMsg && <div className="text-xs font-bold text-emerald-500 mt-2">{annMsg}</div>}
     {loading && <div className="text-sm text-zinc-500 text-center py-6 animate-pulse">Собираю данные с релеев…</div>}
 
@@ -213,18 +231,50 @@ export default function AdminPage() {
           </select>
           <Button size="sm" variant="outline" onClick={() => setVerify(u.id, !u.verified)}>{u.verified ? '−галочка' : '+галочка'}</Button>
           <Button size="sm" variant="outline" onClick={() => setBan(u.id, !(bl?.banned.includes(u.id)))} className="!text-rose-500"><Ban size={13} />{bl?.banned.includes(u.id) ? 'Разбан' : 'Бан'}</Button>
+          <Button size="sm" variant="outline" title="Что делает этот юзер" onClick={() => { setActUser(u.id); setActFilter('all'); setTab('acts'); }}>⚡</Button>
+          <Button size="sm" variant="outline" title="Переписки юзера" onClick={() => { const g = ghosts.find(x => x.a === u.id || x.b === u.id); if (g) { setAuditKey(g.key); setTab('audit'); } else alert('Переписок с участием юзера нет'); }}>👁</Button>
         </div>)}
         {shown.length === 0 && !loading && <Empty icon="👥" title="Никого нет" />}
       </div>
     </div>}
 
-    {tab === 'acts' && <div className="mt-3 glass rounded-2xl p-3 flex flex-col gap-1.5 max-h-[60vh] overflow-y-auto">
-      {acts.map(a => <div key={a.id} className="flex items-center gap-2.5 text-sm rounded-xl px-2.5 py-2 bg-zinc-50 dark:bg-white/[.03]">
-        <b>{ghostNames[a.uid] || a.uid.slice(0, 8)}</b>
-        <span className="text-zinc-500 truncate">{a.text}</span>
-        <span className="ml-auto text-[11px] text-zinc-400 shrink-0">{timeAgo(a.at)}</span>
-      </div>)}
-      {acts.length === 0 && !loading && <Empty icon="⚡" title="Активности пока нет" />}
+    {tab === 'acts' && <div className="mt-3">
+      <div className="flex gap-1.5 flex-wrap mb-2">
+        {[['all', 'Все'], ['post', '📝 Посты'], ['like', '❤️ Лайки'], ['repost', '🔁 Репосты'], ['comment', '💬 Комменты'], ['vote', '🗳 Голоса'], ['story', '📸 Истории'], ['follow', '👥 Подписки']].map(([v, l]) => <button key={v} onClick={() => setActFilter(v)} className={`text-xs font-bold rounded-full px-3 py-1.5 ${actFilter === v ? 'bg-blue-600 text-white' : 'glass'}`}>{l}</button>)}
+      </div>
+      {actUser && <div className="mb-2 text-xs font-bold glass rounded-xl px-3 py-2">👤 {ghostNames[actUser] || actUser.slice(0, 12)}… <button onClick={() => setActUser('')} className="ml-2 text-blue-500">✕ сбросить</button></div>}
+      <div className="glass rounded-2xl p-3 flex flex-col gap-1.5 max-h-[60vh] overflow-y-auto">
+        {acts.filter(a => (actFilter === 'all' || a.type === actFilter) && (!actUser || a.uid === actUser)).map(a => <div key={a.id} className="flex items-center gap-2.5 text-sm rounded-xl px-2.5 py-2 bg-zinc-50 dark:bg-white/[.03]">
+          <Link href={`/profile?id=${a.uid}`} className="font-bold hover:underline shrink-0">{ghostNames[a.uid] || a.uid.slice(0, 8)}</Link>
+          <span className="text-zinc-500 truncate">{a.text}</span>
+          <span className="ml-auto text-[11px] text-zinc-400 shrink-0">{timeAgo(a.at)}</span>
+        </div>)}
+        {acts.filter(a => (actFilter === 'all' || a.type === actFilter) && (!actUser || a.uid === actUser)).length === 0 && !loading && <Empty icon="⚡" title="Активности пока нет" />}
+      </div>
+    </div>}
+
+    {tab === 'search' && <div className="mt-3">
+      <input value={sq} onChange={e => setSq(e.target.value)} placeholder="🔍 Люди, публикации, профили — введи имя, слово или pubkey…" className="w-full h-11 rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-3.5 text-sm outline-none mb-2" />
+      {sBusy && <div className="text-xs text-zinc-500 animate-pulse mb-2">Ищу по сети…</div>}
+      <b className="text-sm">👥 Люди · {sUsers.length}</b>
+      <div className="glass rounded-2xl overflow-hidden mt-1.5 mb-3">
+        {sUsers.map(u => <div key={u.id} className="flex items-center gap-2.5 px-3.5 py-2.5 border-b border-zinc-100 dark:border-white/5 last:border-0">
+          <Avatar src={u.avatar_url} name={u.name} size={34} />
+          <div className="flex-1 min-w-0"><Link href={`/profile?id=${u.id}`} className="text-sm font-bold hover:underline">{u.name}</Link><div className="text-[11px] text-zinc-500 font-mono truncate">{u.id.slice(0, 24)}… · {u.role}</div></div>
+          <Button size="sm" variant="outline" onClick={() => { setActUser(u.id); setActFilter('all'); setTab('acts'); }}>⚡ Действия</Button>
+          <Button size="sm" variant="outline" className="!text-rose-500" onClick={() => setBan(u.id, !(bl?.banned.includes(u.id)))}><Ban size={13} /></Button>
+        </div>)}
+        {sq.trim() && sUsers.length === 0 && !sBusy && <div className="text-xs text-zinc-500 p-3">Никого не нашёл</div>}
+      </div>
+      <b className="text-sm">📰 Публикации · {sPosts.length}</b>
+      <div className="glass rounded-2xl overflow-hidden mt-1.5">
+        {sPosts.map(p => <div key={p.id} className="px-3.5 py-2.5 border-b border-zinc-100 dark:border-white/5 last:border-0">
+          <div className="text-sm">{p.text || (p.video_url ? '🎬 видео' : '📸 фото')}</div>
+          <div className="flex items-center gap-2 mt-1"><span className="text-[11px] text-zinc-500">от <Link href={`/profile?id=${p.author_id}`} className="font-bold hover:underline">{ghostNames[p.author_id] || p.author_id.slice(0, 8)}</Link> · {timeAgo(p.created_at)}</span>
+          <Button size="sm" variant="outline" className="ml-auto !text-rose-500" onClick={async () => { if (!confirm('Удалить пост у всех?')) return; await deletePost(p.id).catch(() => {}); await applyMod('hide', p.id).catch(() => {}); setSPosts(sPosts.filter(x => x.id !== p.id)); }}>Удалить</Button></div>
+        </div>)}
+        {sq.trim() && sPosts.length === 0 && !sBusy && <div className="text-xs text-zinc-500 p-3">Публикаций не нашёл</div>}
+      </div>
     </div>}
 
     {tab === 'mod' && <div className="mt-3 flex flex-col gap-2">

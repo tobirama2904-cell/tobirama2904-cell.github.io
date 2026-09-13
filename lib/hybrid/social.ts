@@ -636,8 +636,8 @@ export async function bumpBotUses(id: string): Promise<void> {
   if (b) { b.uses++; saveLocalBots(all); }
 }
 
-// ---------- activity (posts + stories + comments merged) ----------
-export interface ActItem { id: string; uid: string; type: 'post' | 'story' | 'comment'; text: string; at: string }
+// ---------- activity (posts + stories + comments + likes + reposts + votes + follows) ----------
+export interface ActItem { id: string; uid: string; type: 'post' | 'story' | 'comment' | 'like' | 'repost' | 'vote' | 'follow'; text: string; at: string }
 export async function getActivity(limit = 80): Promise<ActItem[]> {
   const out: ActItem[] = [];
   const ps = await getPosts({ limit: 60 }).catch(() => []);
@@ -647,8 +647,44 @@ export async function getActivity(limit = 80): Promise<ActItem[]> {
   const tops = ps.slice(0, 12);
   const cgroups = await Promise.all(tops.map(p => getComments(p.id).catch(() => [] as Comment[])));
   cgroups.flat().forEach(c => out.push({ id: c.id, uid: c.author_id, type: 'comment', text: '💬 коммент: ' + c.text.slice(0, 90), at: c.created_at }));
+  try {
+    const bl = await loadBanlist().catch(() => null);
+    const banned = new Set(bl?.banned || []);
+    const [likes, votes, reps, fols] = await Promise.all([
+      nquery({ kinds: [7], '#t': [T_POST], limit: 60 }, READ_RELAYS, 6000).catch((): NEvent[] => []),
+      nquery({ kinds: [7], limit: 200 }, READ_RELAYS, 6000).catch((): NEvent[] => []),
+      nquery({ kinds: [6], '#t': [T_POST], limit: 40 }, READ_RELAYS, 6000).catch((): NEvent[] => []),
+      nquery({ kinds: [3], limit: 40 }, READ_RELAYS, 6000).catch((): NEvent[] => []),
+    ]);
+    const known = new Set(ps.map(p => p.author_id));
+    likes.forEach(e => {
+      if (banned.has(e.pubkey) || e.content.startsWith('legion-vote:')) return;
+      const t = tag(e, 'e') || '';
+      out.push({ id: e.id, uid: e.pubkey, type: 'like', text: `❤️ лайк посту ${t.slice(0, 8)}${e.content && e.content !== '+' ? ' ' + e.content.slice(0, 10) : ''}`, at: iso(e.created_at) });
+    });
+    votes.forEach(e => {
+      if (banned.has(e.pubkey) || !e.content.startsWith('legion-vote:')) return;
+      out.push({ id: e.id, uid: e.pubkey, type: 'vote', text: `🗳 голос в опросе: вариант ${e.content.slice(12, 14)}`, at: iso(e.created_at) });
+    });
+    reps.forEach(e => {
+      if (banned.has(e.pubkey)) return;
+      out.push({ id: e.id, uid: e.pubkey, type: 'repost', text: `🔁 репост ${(tag(e, 'e') || '').slice(0, 8)}`, at: iso(e.created_at) });
+    });
+    fols.forEach(e => {
+      if (banned.has(e.pubkey) || !known.has(e.pubkey)) return;
+      out.push({ id: e.id, uid: e.pubkey, type: 'follow', text: `👥 подписки: ${tags(e, 'p').length} чел.`, at: iso(e.created_at) });
+    });
+  } catch {}
   out.sort((a, b) => (a.at < b.at ? 1 : -1));
   return out.slice(0, limit);
+}
+
+// ---------- global post search (admin + users) ----------
+export async function searchPosts(q: string, limit = 30): Promise<Post[]> {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return [];
+  const ps = await getPosts({ limit: 120 }).catch(() => []);
+  return ps.filter(p => (p.text || '').toLowerCase().includes(needle)).slice(0, limit);
 }
 
 // ---------- pinned post (per-author 30078) ----------
