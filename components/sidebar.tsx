@@ -4,6 +4,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MessageSquare, Newspaper, MessagesSquare, Mic, Clapperboard, Brain, Zap, BarChart3, Users, ShieldCheck, Sun, Moon, Command, LogOut, Bell, Sparkles, Plus, User, PlaySquare, X, Home } from 'lucide-react';
 import { useStore } from '@/lib/store';
+import { APP_VERSION } from '@/lib/version';
 import { Avatar, Badge } from './ui/primitives';
 import { Tip } from './ui/overlays';
 import { useEffect, useState } from 'react';
@@ -51,7 +52,7 @@ export function Sidebar() {
     <aside className="hidden lg:flex w-64 shrink-0 flex-col gap-1 p-3 border-r border-zinc-200 dark:border-white/10 bg-white/60 dark:bg-black/30 backdrop-blur-2xl h-screen sticky top-0 overflow-y-auto">
       <Link href="/" className="flex items-center gap-2.5 px-2 py-3">
         <div className="size-9 rounded-xl bg-gradient-to-br from-blue-600 to-cyan-400 grid place-items-center text-white font-display font-bold shadow-lg shadow-blue-600/30">◈</div>
-        <div className="leading-none"><div className="font-display font-bold tracking-widest text-[15px]">LEGION</div><div className="text-[10px] text-zinc-500 font-bold tracking-[.2em]">SOCIAL · v23</div></div>
+        <div className="leading-none"><div className="font-display font-bold tracking-widest text-[15px]">LEGION</div><div className="text-[10px] text-zinc-500 font-bold tracking-[.2em]">SOCIAL · {APP_VERSION}</div></div>
         {!cloud && <Badge className="ml-auto">гость</Badge>}
       </Link>
       <nav className="flex flex-col gap-0.5 mt-1">
@@ -144,7 +145,7 @@ export function Sidebar() {
               <Home size={21} />Главная
             </Link>
           </div>
-          <div className="text-center text-[10px] font-bold text-zinc-400 mt-3">LEGION v22 · всё бесплатно · обнови страницу, если что-то старое</div>
+          <div className="text-center text-[10px] font-bold text-zinc-400 mt-3">LEGION {APP_VERSION} · всё бесплатно · обнови страницу, если что-то старое</div>
         </motion.div>
       </motion.div>}
     </AnimatePresence>

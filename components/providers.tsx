@@ -1,5 +1,6 @@
 'use client';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { APP_VERSION } from '@/lib/version';
 import { useStore, applyTheme, resolveTheme } from '@/lib/store';
 import { usePresence } from '@/lib/realtime';
 import { installApiShim } from '@/lib/hybrid/fetch-shim';
@@ -15,6 +16,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
   const setProfile = useStore(s => s.setProfile);
   const setCloud = useStore(s => s.setCloud);
   const me = useStore(s => s.me);
+  const [newVer, setNewVer] = useState('');
   usePresence(me?.guest ? null : me?.id || null, me?.name || '');
 
   useEffect(() => { try { const t = resolveTheme(); if (t !== theme) useStore.getState().setTheme(t); applyTheme(t); } catch {} }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -58,6 +60,34 @@ export function Providers({ children }: { children: React.ReactNode }) {
     const off = onAuth(ss => { apply(ss); });
     return () => { dead = true; off(); };
   }, [setMe, setProfile, setCloud]);
+  // self-update: if live version.json is newer, offer one-tap force refresh (unsticks ancient caches)
+  useEffect(() => {
+    let dead = false;
+    const check = async () => {
+      try {
+        const r = await fetch('/version.json', { cache: 'no-store' });
+        const j = await r.json();
+        if (!dead && j && typeof j.version === 'string' && j.version !== APP_VERSION) setNewVer(j.version);
+      } catch {}
+    };
+    check();
+    const t = setInterval(check, 60000);
+    const onVis = () => { if (document.visibilityState === 'visible') check(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { dead = true; clearInterval(t); document.removeEventListener('visibilitychange', onVis); };
+  }, []);
+  const forceUpdate = async () => {
+    try {
+      const regs = await navigator.serviceWorker?.getRegistrations?.();
+      await Promise.all((regs || []).map(r => r.unregister().catch(() => {})));
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k).catch(() => {})));
+    } catch {}
+    location.reload();
+  };
 
-  return <>{children}</>;
+  return <>{children}{newVer && <div className="fixed z-[100] bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 rounded-2xl bg-zinc-950 text-white pl-4 pr-2 py-2 shadow-2xl border border-white/15 max-w-[calc(100vw-2rem)]">
+    <span className="text-xs font-bold whitespace-nowrap">⬆ Вышла {newVer} — обновить?</span>
+    <button onClick={forceUpdate} className="px-4 py-2 rounded-xl bg-blue-600 text-xs font-bold hover:bg-blue-500 shrink-0">Обновить</button>
+  </div>}</>;
 }

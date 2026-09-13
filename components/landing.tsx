@@ -9,6 +9,7 @@ import { MessageSquare, Users, Mic, Brain, Zap, ShieldCheck, ArrowRight, Check, 
 import Lottie from 'lottie-react';
 import { Magnetic, Marquee, Shine, Tilt } from './glint';
 import waveAnim from '@/public/lottie/wave.json';
+import { APP_VERSION } from '@/lib/version';
 
 const Orb = dynamic(() => import('./orb').then(m => m.Orb), { ssr: false, loading: () => <div className="w-full h-full animate-pulse rounded-full bg-blue-600/10" /> });
 
@@ -58,7 +59,7 @@ export function Landing() {
       <div className="max-w-6xl mx-auto px-5 grid lg:grid-cols-2 gap-10 items-center relative z-10">
         <div>
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="inline-flex items-center gap-2 rounded-full glass px-4 py-1.5 text-xs font-bold mb-6">
-            <Sparkles size={14} className="text-blue-500" /> LEGION v19 · AI-соцсеть · Free навсегда
+            <Sparkles size={14} className="text-blue-500" /> LEGION {APP_VERSION} · AI-соцсеть · Free навсегда
           </motion.div>
           <motion.h1 initial={{ opacity: 0, y: 26 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }} className="font-display text-5xl md:text-7xl font-bold leading-[1.02]">
             Твой ИИ.<br /><span className="text-gradient">Твои люди.</span><br />Одна сеть.
