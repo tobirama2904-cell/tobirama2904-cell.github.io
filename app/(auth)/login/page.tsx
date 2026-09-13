@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { KeyRound, Send } from 'lucide-react';
 import { supaBrowser } from '@/lib/supabase/client';
 import { importKey, attachTelegram } from '@/lib/hybrid/identity';
-import { TG_BOT } from '@/lib/hybrid/config';
+import { tgBot } from '@/lib/hybrid/config';
 import { Button, Input } from '@/components/ui/primitives';
 
 export default function Login() {
@@ -17,9 +17,16 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
   const router = useRouter();
   const tgRef = useRef<HTMLDivElement>(null);
+  const [tgName, setTgName] = useState('');
+  const [tgManual, setTgManual] = useState(false);
 
   useEffect(() => {
-    if (!TG_BOT || !tgRef.current || tgRef.current.children.length) return;
+    const bot = tgBot();
+    if (bot) setTgName(bot);
+  }, []);
+  useEffect(() => {
+    const bot = tgName;
+    if (!bot || !tgRef.current || tgRef.current.children.length) return;
     (window as any).onTelegramAuth = (u: { id: number; username?: string; first_name?: string; photo_url?: string }) => {
       try {
         attachTelegram({ id: u.id, username: u.username, first_name: u.first_name, photo_url: u.photo_url });
@@ -29,11 +36,11 @@ export default function Login() {
     const s = document.createElement('script');
     s.src = 'https://telegram.org/js/telegram-widget.js?22';
     s.async = true;
-    s.setAttribute('data-telegram-login', TG_BOT);
+    s.setAttribute('data-telegram-login', bot);
     s.setAttribute('data-size', 'large');
     s.setAttribute('data-onauth', 'onTelegramAuth(user)');
     tgRef.current.appendChild(s);
-  }, [router]);
+  }, [router, tgName]);
 
   const login = async () => {
     setErr(''); setBusy(true);
@@ -59,8 +66,14 @@ export default function Login() {
         <Input placeholder="Пароль" type="password" value={pass} onChange={e => setPass(e.target.value)} onKeyDown={e => e.key === 'Enter' && login()} />
         {err && <div className="text-xs font-bold text-rose-500">{err}</div>}
         <Button onClick={login} disabled={busy} className="w-full">{busy ? 'Вхожу…' : 'Войти'}</Button>
-        {TG_BOT && <><div className="flex items-center gap-2 text-[11px] font-bold text-zinc-400"><span className="flex-1 h-px bg-zinc-200 dark:bg-white/10" />ИЛИ<span className="flex-1 h-px bg-zinc-200 dark:bg-white/10" /></div>
-        <div ref={tgRef} className="flex justify-center" /></>}
+        {tgName ? <><div className="flex items-center gap-2 text-[11px] font-bold text-zinc-400"><span className="flex-1 h-px bg-zinc-200 dark:bg-white/10" />ИЛИ<span className="flex-1 h-px bg-zinc-200 dark:bg-white/10" /></div>
+        <div ref={tgRef} className="flex justify-center" /></> : <>
+          {!tgManual ? <button onClick={() => setTgManual(true)} className="text-xs font-bold text-sky-500 hover:underline">✈️ Войти через Telegram</button>
+          : <div className="flex gap-2">
+            <Input placeholder="имя бота (без @)" value={tgName} onChange={e => setTgName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && tgName.trim()) { try { localStorage.setItem('legion-tg-bot', tgName.trim()); } catch {} } }} />
+            <Button onClick={() => { if (tgName.trim()) { try { localStorage.setItem('legion-tg-bot', tgName.trim()); } catch {} } }}><Send size={15} /></Button>
+          </div>}
+        </>}
         <Button variant="outline" className="w-full" onClick={() => setShowKey(!showKey)}><KeyRound size={15} /> Войти по ключу nsec</Button>
         {showKey && <div className="flex gap-2">
           <Input placeholder="nsec1…" value={nsec} onChange={e => setNsec(e.target.value)} onKeyDown={e => e.key === 'Enter' && loginKey()} />

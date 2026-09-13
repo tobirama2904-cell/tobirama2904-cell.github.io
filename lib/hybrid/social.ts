@@ -1,8 +1,8 @@
 // LEGION social graph on Nostr: kind-0 profiles, kind-1 posts/comments,
 // kind-6 reposts, kind-7 likes, kind-3 follows, kind-10000 mutes, kind-1984 reports.
-import type { Event as NEvent } from 'nostr-tools';
+import { nip19, type Event as NEvent } from 'nostr-tools';
 import { nquery, npublish, nsub, tag, tags, ts, iso } from './nostr';
-import { T_POST, T_STORY, T_ANN, T_BOT, READ_RELAYS, RELAYS } from './config';
+import { T_POST, T_STORY, T_ANN, T_BOT, T_EVENT, READ_RELAYS, RELAYS, ADMIN_EMAILS } from './config';
 import { loadSession } from './identity';
 import { loadBanlist } from './banlist';
 import type { Profile, Post, Comment, Story, Report } from '../supabase/types';
@@ -13,7 +13,7 @@ function tombs(): Set<string> {
   try { return new Set(JSON.parse(localStorage.getItem(TOMB_K) || '[]')); } catch { return new Set(); }
 }
 export function isTomb(id: string): boolean { return tombs().has(id); }
-function addTomb(id: string) {
+export function addTomb(id: string) {
   try {
     const t = tombs(); t.add(id);
     localStorage.setItem(TOMB_K, JSON.stringify([...t].slice(-2000)));
@@ -21,7 +21,7 @@ function addTomb(id: string) {
 }
 
 // ---------- profiles (kind 0) ----------
-interface K0 { name?: string; about?: string; picture?: string; banner?: string; legion_status?: string; legion_private?: boolean }
+interface K0 { name?: string; about?: string; picture?: string; banner?: string; legion_status?: string; legion_private?: boolean; lud16?: string; lud06?: string }
 const pcache = new Map<string, { at: number; p: Profile; raw: K0 }>();
 export function blankProfile(pub: string): Profile {
   const now = new Date().toISOString();
@@ -46,6 +46,7 @@ export async function getProfile(pub: string): Promise<Profile> {
       p.cover_url = j.banner || null;
       p.status = j.legion_status || '';
       p.is_private = !!j.legion_private;
+      (p as unknown as Record<string, unknown>).lud16 = j.lud16 || j.lud06 || null;
       p.created_at = iso(e.created_at);
       p.last_seen = iso(e.created_at);
       pcache.set(pub, { at: Date.now(), p, raw: j });
@@ -61,6 +62,7 @@ export async function getProfile(pub: string): Promise<Profile> {
     const bl = await loadBanlist();
     if (bl.roles[pub]) p.role = bl.roles[pub] as Profile['role'];
     if (bl.admins.includes(pub)) p.role = 'admin';
+    else if (me && me.id === pub && me.email && ADMIN_EMAILS.includes(me.email.toLowerCase()) && bl.admins.length === 0) p.role = 'admin';
     if (bl.verified.includes(pub)) p.verified = true;
     if (bl.banned.includes(pub)) p.status = '⛔ banned';
   } catch {}
@@ -68,6 +70,11 @@ export async function getProfile(pub: string): Promise<Profile> {
 }
 export async function listProfiles(limit = 100): Promise<Profile[]> {
   const out = new Map<string, Profile>();
+  // LEGION authors first (real network people), broad relay fill after
+  try {
+    const leg = await directory(Math.min(80, limit));
+    leg.forEach(p => out.set(p.id, p));
+  } catch {}
   try {
     const evs = await nquery({ kinds: [0], limit: Math.min(200, limit * 2) }, READ_RELAYS, 6000);
     for (const e of evs) {
@@ -120,16 +127,101 @@ export async function saveProfile(patch: { name?: string; bio?: string; status?:
   return getProfile(s.id);
 }
 
+// ---------- directory: real LEGION people (post authors + kind-0s) ----------
+export async function directory(limit = 60): Promise<Profile[]> {
+  const out = new Map<string, Profile>();
+  let authors: string[] = [];
+  try {
+    const posts = await getPosts({ limit: 80 });
+    authors = [...new Set(posts.map(p => p.author_id))].slice(0, 60);
+  } catch {}
+  try {
+    const f: Record<string, unknown> = { kinds: [0], limit: 150 };
+    if (authors.length) f.authors = authors;
+    const evs = await nquery(f as never, READ_RELAYS, 6000);
+    const latest = new Map<string, NEvent>();
+    [...evs].reverse().forEach(e => latest.set(e.pubkey, e));
+    latest.forEach((e, pub) => {
+      let j: K0 = {};
+      try { j = JSON.parse(e.content); } catch {}
+      if (!j.name && !j.picture) return;
+      out.set(pub, {
+        ...blankProfile(pub), name: j.name || blankProfile(pub).name,
+        bio: j.about || '', avatar_url: j.picture || null, cover_url: j.banner || null,
+        status: j.legion_status || '', is_private: !!j.legion_private,
+        created_at: iso(e.created_at), last_seen: iso(e.created_at),
+      } as Profile);
+    });
+    authors.forEach(a => { if (!out.has(a)) out.set(a, blankProfile(a)); });
+  } catch {
+    authors.forEach(a => { if (!out.has(a)) out.set(a, blankProfile(a)); });
+  }
+  const me = loadSession();
+  if (me && !out.has(me.id)) out.set(me.id, await getProfile(me.id));
+  try {
+    const bl = await loadBanlist();
+    out.forEach(pr => {
+      if (bl.roles[pr.id]) pr.role = bl.roles[pr.id] as Profile['role'];
+      if (bl.admins.includes(pr.id)) pr.role = 'admin';
+      if (bl.verified.includes(pr.id)) pr.verified = true;
+    });
+  } catch {}
+  return [...out.values()].slice(0, limit);
+}
+export async function searchProfiles(q: string): Promise<Profile[]> {
+  const query = q.trim().replace(/^@/, '');
+  if (query.length < 2) return [];
+  try {
+    const evs = await nquery({ kinds: [0], search: query, limit: 20 } as never, RELAYS, 6000);
+    const out: Profile[] = [];
+    for (const e of evs) {
+      let j: K0 = {};
+      try { j = JSON.parse(e.content); } catch {}
+      if (!j.name && !j.picture) continue;
+      out.push({
+        ...blankProfile(e.pubkey), name: j.name || blankProfile(e.pubkey).name,
+        bio: j.about || '', avatar_url: j.picture || null,
+        created_at: iso(e.created_at), last_seen: iso(e.created_at),
+      });
+      if (out.length >= 20) break;
+    }
+    return out;
+  } catch { return []; }
+}
+// npub / hex / nip05 (name@domain) -> pubkey
+export async function resolveAccount(input: string): Promise<string | null> {
+  const v = input.trim();
+  if (/^[0-9a-f]{64}$/i.test(v)) return v.toLowerCase();
+  if (v.startsWith('npub1')) {
+    try {
+      const d = nip19.decode(v);
+      if (d.type === 'npub') return d.data as string;
+    } catch {}
+    return null;
+  }
+  const m = v.match(/^([^@\s]+)@([^@\s]+\.[^@\s]+)$/);
+  if (m) {
+    try {
+      const r = await fetch(`https://${m[2]}/.well-known/nostr.json?name=${encodeURIComponent(m[1])}`);
+      const j = await r.json();
+      const pk = j?.names?.[m[1].toLowerCase()];
+      return typeof pk === 'string' && /^[0-9a-f]{64}$/i.test(pk) ? pk.toLowerCase() : null;
+    } catch { return null; }
+  }
+  return null;
+}
+
 // ---------- posts (kind 1 + #legion) ----------
 const IMG_URL = /(https?:\/\/\S+\.(?:png|jpg|jpeg|gif|webp|svg)(?:\?\S*)?)\s*$/i;
 export function parsePost(e: NEvent): Post {
   let text = e.content;
   let image: string | null = tag(e, 'image') || null;
+  const video: string | null = tag(e, 'video') || null;
   const m = text.match(IMG_URL);
   if (!image && m) image = m[1];
   if (m) text = text.slice(0, m.index).trim();
   return {
-    id: e.id, author_id: e.pubkey, text, image_url: image,
+    id: e.id, author_id: e.pubkey, text, image_url: image, video_url: video,
     likes: 0, comments: 0, reposts: 0, created_at: iso(e.created_at),
   };
 }
@@ -167,16 +259,39 @@ export async function getPosts(opts: { author?: string; limit?: number; since?: 
   if (opts.author) f.authors = [opts.author];
   if (opts.since) f.since = opts.since;
   const evs = await nquery(f as never, RELAYS, 7000);
-  const list = evs.filter(e => !isTomb(e.id)).map(parsePost);
+  let hidden: Set<string> = new Set();
+  let banned: Set<string> = new Set();
+  try {
+    const bl = await loadBanlist();
+    hidden = new Set(bl.hidden || []);
+    banned = new Set(bl.banned || []);
+  } catch {}
+  let list = evs.filter(e => !isTomb(e.id) && !hidden.has(e.id) && !banned.has(e.pubkey)).map(parsePost);
+  // private profiles: visible to self + followers only
+  const mePub = loadSession()?.id;
+  const authors = [...new Set(list.map(p => p.author_id))];
+  if (authors.length) {
+    try {
+      const kev = await nquery({ kinds: [0], authors: authors.slice(0, 80) }, READ_RELAYS, 5000);
+      const priv = new Set<string>();
+      kev.forEach(e => { try { if ((JSON.parse(e.content) as K0).legion_private) priv.add(e.pubkey); } catch {} });
+      if (priv.size) {
+        let following: Set<string> = new Set();
+        if (mePub) { try { following = new Set(await getFollowing(mePub)); } catch {} }
+        list = list.filter(p => !priv.has(p.author_id) || p.author_id === mePub || following.has(p.author_id));
+      }
+    } catch {}
+  }
   await fillCounts(list);
   return list;
 }
-export async function publishPost(text: string, image_url?: string | null): Promise<Post | null> {
+export async function publishPost(text: string, image_url?: string | null, video_url?: string | null): Promise<Post | null> {
   const s = loadSession();
   if (!s) return null;
-  const tagsArr = [['t', T_POST]];
+  const tagsArr: string[][] = [['t', T_POST]];
   let content = text;
   if (image_url) { tagsArr.push(['image', image_url]); content = text ? text + '\n' + image_url : image_url; }
+  if (video_url) { tagsArr.push(['video', video_url]); content = text ? text + '\n' + video_url : video_url; }
   const { event, ok } = await npublish({ kind: 1, content, tags: tagsArr }, s.sk);
   if (!ok) return null;
   const p = { ...parsePost(event), author_id: s.id };
@@ -208,8 +323,10 @@ export async function publishRepost(postId: string, authorPub: string): Promise<
 }
 export async function getComments(postId: string): Promise<Comment[]> {
   const evs = await nquery({ kinds: [1], '#e': [postId], limit: 200 }, RELAYS, 6000);
+  let hidden: Set<string> = new Set();
+  try { hidden = new Set((await loadBanlist()).hidden || []); } catch {}
   return evs
-    .filter(e => !isTomb(e.id) && e.tags.some(t => t[0] === 'e' && t[1] === postId))
+    .filter(e => !isTomb(e.id) && !hidden.has(e.id) && e.tags.some(t => t[0] === 'e' && t[1] === postId))
     .map(e => ({ id: e.id, post_id: postId, author_id: e.pubkey, text: e.content, created_at: iso(e.created_at) }))
     .sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at));
 }
@@ -260,22 +377,84 @@ export async function mutedList(): Promise<string[]> {
 export async function getStories(): Promise<Story[]> {
   const evs = await nquery({ kinds: [1], '#t': [T_STORY], limit: 60 }, RELAYS, 6000);
   const cutoff = Date.now() - 24 * 3600e3;
+  let hidden: Set<string> = new Set();
+  try { hidden = new Set((await loadBanlist()).hidden || []); } catch {}
   return evs
-    .filter(e => !isTomb(e.id) && e.created_at * 1000 > cutoff)
+    .filter(e => !isTomb(e.id) && !hidden.has(e.id) && e.created_at * 1000 > cutoff)
     .map(e => ({
       id: e.id, author_id: e.pubkey, image_url: tag(e, 'image') || null, text: e.content,
       created_at: iso(e.created_at), expires_at: new Date(e.created_at * 1000 + 24 * 3600e3).toISOString(),
     }));
 }
-export async function publishStory(text: string): Promise<Story | null> {
+export async function publishStory(text: string, image_url?: string | null): Promise<Story | null> {
   const s = loadSession();
   if (!s) return null;
-  const { event, ok } = await npublish({ kind: 1, content: text, tags: [['t', T_STORY]] }, s.sk);
+  const tg: string[][] = [['t', T_STORY]];
+  if (image_url) tg.push(['image', image_url]);
+  const { event, ok } = await npublish({ kind: 1, content: text, tags: tg }, s.sk);
   if (!ok) return null;
   return {
-    id: event.id, author_id: s.id, image_url: null, text,
+    id: event.id, author_id: s.id, image_url: image_url || null, text,
     created_at: iso(event.created_at), expires_at: new Date(event.created_at * 1000 + 24 * 3600e3).toISOString(),
   };
+}
+export async function unblockUser(pub: string): Promise<void> {
+  const s = loadSession();
+  if (!s) return;
+  const evs = await nquery({ kinds: [10000], authors: [s.id], limit: 1 }, READ_RELAYS, 4000);
+  const cur = evs[0] ? tags(evs[0], 'p') : [];
+  if (!cur.includes(pub)) return;
+  await npublish({ kind: 10000, content: '', tags: cur.filter(x => x !== pub).map(p => ['p', p]) }, s.sk);
+}
+// ---------- events (kind 1 + #legion-event, RSVP = kind-7 legion-rsvp) ----------
+export interface LegionEvent { id: string; author_id: string; title: string; at: string; place: string; about: string; going: number; meGoing: boolean; created_at: string }
+export async function publishEvent(e: { title: string; at: string; place: string; about: string }): Promise<LegionEvent | null> {
+  const s = loadSession();
+  if (!s) return null;
+  const { event, ok } = await npublish({ kind: 1, content: JSON.stringify(e), tags: [['t', T_EVENT]] }, s.sk);
+  if (!ok) return null;
+  return { id: event.id, author_id: s.id, ...e, going: 0, meGoing: false, created_at: iso(event.created_at) };
+}
+export async function listEvents(): Promise<LegionEvent[]> {
+  const me = loadSession()?.id;
+  const evs = await nquery({ kinds: [1], '#t': [T_EVENT], limit: 100 }, RELAYS, 6000);
+  let hidden: Set<string> = new Set();
+  try { hidden = new Set((await loadBanlist()).hidden || []); } catch {}
+  const out: LegionEvent[] = [];
+  for (const e of evs) {
+    if (isTomb(e.id) || hidden.has(e.id)) continue;
+    try {
+      const j = JSON.parse(e.content);
+      if (!j.title) continue;
+      out.push({ id: e.id, author_id: e.pubkey, title: String(j.title).slice(0, 120), at: String(j.at || ''), place: String(j.place || ''), about: String(j.about || '').slice(0, 500), going: 0, meGoing: false, created_at: iso(e.created_at) });
+    } catch {}
+  }
+  if (out.length) {
+    try {
+      const votes = await nquery({ kinds: [7], '#e': out.map(o => o.id).slice(0, 40), limit: 500 }, READ_RELAYS, 5000);
+      const seen = new Map<string, Set<string>>();
+      votes.forEach(v => {
+        if (v.content !== 'legion-rsvp') return;
+        const ref = tag(v, 'e');
+        if (!ref) return;
+        if (!seen.has(ref)) seen.set(ref, new Set());
+        seen.get(ref)!.add(v.pubkey);
+      });
+      out.forEach(o => {
+        const st = seen.get(o.id);
+        o.going = st ? st.size : 0;
+        o.meGoing = me ? !!st?.has(me) : false;
+      });
+    } catch {}
+  }
+  return out;
+}
+export async function rsvpEvent(id: string): Promise<void> {
+  const s = loadSession();
+  if (!s) return;
+  const mine = await nquery({ kinds: [7], authors: [s.id], '#e': [id], limit: 5 }, READ_RELAYS, 4000);
+  if (mine.some(e => e.content === 'legion-rsvp')) return;
+  await npublish({ kind: 7, content: 'legion-rsvp', tags: [['e', id]] }, s.sk);
 }
 
 // ---------- reports (NIP-56 kind 1984) ----------

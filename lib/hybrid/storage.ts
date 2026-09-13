@@ -1,6 +1,6 @@
 // Free unlimited file storage cascade (zero keys by default):
 // Telegram bot (if configured) -> catbox -> uguu.se -> Blossom/NIP-98 -> dataURL.
-import { UPLOAD_HOSTS, BLOSSOM_SERVERS, TG_BOT_TOKEN, TG_STORAGE_CHAT } from './config';
+import { UPLOAD_HOSTS, BLOSSOM_SERVERS, tgToken, tgChat } from './config';
 import { loadSession } from './identity';
 import { finalizeEvent, type Event as NEvent } from 'nostr-tools';
 import { hexToBytes, ts } from './nostr';
@@ -24,11 +24,16 @@ export function lookupUrl(path: string): string | null {
   return urlMap()[path] || null;
 }
 
+function tfetch(url: string, init: RequestInit, ms = 15000): Promise<Response> {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), ms);
+  return fetch(url, { ...init, signal: c.signal }).finally(() => clearTimeout(t));
+}
 async function viaCatbox(f: File): Promise<string> {
   const fd = new FormData();
   fd.append('reqtype', 'fileupload');
   fd.append('fileToUpload', f);
-  const r = await fetch(UPLOAD_HOSTS.catbox, { method: 'POST', body: fd });
+  const r = await tfetch(UPLOAD_HOSTS.catbox, { method: 'POST', body: fd }, 25000);
   const t = (await r.text()).trim();
   if (!t.startsWith('http')) throw new Error('catbox');
   return t;
@@ -36,7 +41,7 @@ async function viaCatbox(f: File): Promise<string> {
 async function viaUguu(f: File): Promise<string> {
   const fd = new FormData();
   fd.append('files[]', f);
-  const r = await fetch(UPLOAD_HOSTS.uguu, { method: 'POST', body: fd });
+  const r = await tfetch(UPLOAD_HOSTS.uguu, { method: 'POST', body: fd }, 25000);
   const j = await r.json();
   const u = j?.files?.[0]?.url;
   if (!u) throw new Error('uguu');
@@ -59,7 +64,7 @@ async function viaBlossom(f: File): Promise<string> {
     try {
       const url = `${srv}/${sha}`;
       const auth = await nip98Auth(url, 'PUT');
-      const r = await fetch(url, { method: 'PUT', headers: { Authorization: auth, 'Content-Type': f.type || 'application/octet-stream' }, body: buf });
+      const r = await tfetch(url, { method: 'PUT', headers: { Authorization: auth, 'Content-Type': f.type || 'application/octet-stream' }, body: buf }, 20000);
       if (!r.ok) continue;
       const j = await r.json().catch(() => null);
       const out = j?.url || url;
@@ -70,18 +75,19 @@ async function viaBlossom(f: File): Promise<string> {
   throw new Error('blossom');
 }
 async function viaTelegram(f: File): Promise<string> {
-  if (!TG_BOT_TOKEN || !TG_STORAGE_CHAT) throw new Error('tg-off');
+  const tok = tgToken(), chat = tgChat();
+  if (!tok || !chat) throw new Error('tg-off');
   const fd = new FormData();
-  fd.append('chat_id', TG_STORAGE_CHAT);
+  fd.append('chat_id', chat);
   fd.append('document', f, f.name);
-  const r = await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument`, { method: 'POST', body: fd });
+  const r = await tfetch(`https://api.telegram.org/bot${tok}/sendDocument`, { method: 'POST', body: fd }, 30000);
   const j = await r.json();
   const fid = j?.result?.document?.file_id;
   if (!fid) throw new Error('tg-up');
-  const g = await (await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/getFile?file_id=${fid}`)).json();
+  const g = await (await tfetch(`https://api.telegram.org/bot${tok}/getFile?file_id=${fid}`, {}, 15000)).json();
   const path = g?.result?.file_path;
   if (!path) throw new Error('tg-file');
-  return `https://api.telegram.org/file/bot${TG_BOT_TOKEN}/${path}`;
+  return `https://api.telegram.org/file/bot${tok}/${path}`;
 }
 function viaDataUrl(f: File): Promise<string> {
   if (f.size > 1_500_000) return Promise.reject(new Error('too-big'));
@@ -96,7 +102,7 @@ function viaDataUrl(f: File): Promise<string> {
 export async function uploadFile(f: File): Promise<string> {
   const errs: string[] = [];
   const chain: [string, () => Promise<string>][] = [];
-  if (TG_BOT_TOKEN && TG_STORAGE_CHAT) chain.push(['tg', () => viaTelegram(f)]);
+  if (tgToken() && tgChat()) chain.push(['tg', () => viaTelegram(f)]);
   chain.push(['catbox', () => viaCatbox(f)]);
   chain.push(['uguu', () => viaUguu(f)]);
   chain.push(['blossom', () => viaBlossom(f)]);

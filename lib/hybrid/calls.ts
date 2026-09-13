@@ -1,6 +1,9 @@
 // P2P voice/video calls: WebRTC media + Trystero-lobby signaling.
 // Same public API as the old Supabase-signalled client.
 import { sendSignal, onSignal } from './live';
+import { APP_ID, RELAYS, T_VOICE } from './config';
+import { nquery, npublish, tag, iso } from './nostr';
+import { loadSession } from './identity';
 
 export type CallState = 'idle' | 'calling' | 'ringing' | 'in-call';
 export interface CallEvents {
@@ -95,4 +98,67 @@ export class CallClient {
     this.ev.onState('idle'); this.ev.onEnd();
   }
   destroy() { try { this.offSig?.(); } catch {} this.hangup(false); }
+}
+
+// ---------- voice rooms (Trystero audio rooms, Nostr directory, zero servers) ----------
+export interface VoiceRoomInfo { id: string; title: string; host: string; hostName: string; created_at: string }
+export async function publishVoiceRoom(title: string): Promise<VoiceRoomInfo | null> {
+  const s = loadSession();
+  if (!s) return null;
+  const id = 'vr-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const { event, ok } = await npublish(
+    { kind: 1, content: JSON.stringify({ id, title: title.slice(0, 80) }), tags: [['t', T_VOICE], ['title', title.slice(0, 80)]] },
+    s.sk,
+  );
+  if (!ok) return null;
+  return { id, title: title.slice(0, 80), host: s.id, hostName: s.name, created_at: iso(event.created_at) };
+}
+export async function listVoiceRooms(): Promise<VoiceRoomInfo[]> {
+  const cutoff = Math.floor(Date.now() / 1000) - 3 * 3600;
+  const evs = await nquery({ kinds: [1], '#t': [T_VOICE], since: cutoff, limit: 50 }, RELAYS, 6000);
+  const out: VoiceRoomInfo[] = [];
+  for (const e of evs) {
+    try {
+      const j = JSON.parse(e.content);
+      if (!j.id) continue;
+      out.push({ id: String(j.id), title: tag(e, 'title') || String(j.title || 'Голосовая'), host: e.pubkey, hostName: '', created_at: iso(e.created_at) });
+    } catch {}
+  }
+  return out;
+}
+export interface VoicePeer { peerId: string; pub: string; name: string }
+export interface VoiceHandle {
+  setMuted: (m: boolean) => void;
+  onPeers: (cb: (p: VoicePeer[]) => void) => void;
+  leave: () => void;
+}
+export async function joinVoiceRoom(roomId: string, onAudio: (peerId: string, stream: MediaStream) => void): Promise<VoiceHandle> {
+  const t = await import('trystero');
+  const room = t.joinRoom({ appId: APP_ID, relayUrls: RELAYS } as never, 'legion-' + roomId) as any;
+  const me = loadSession();
+  const peers = new Map<string, VoicePeer>();
+  let peersCb: (p: VoicePeer[]) => void = () => {};
+  const emit = () => peersCb([...peers.values()]);
+  const hello = room.makeAction('hello');
+  hello.onMessage = (m: any, ctx: any) => {
+    const pid = ctx?.peerId || ctx?.target || '';
+    if (m && m.pub && pid) { peers.set(pid, { peerId: pid, pub: String(m.pub), name: String(m.name || 'Гость') }); emit(); }
+  };
+  room.onPeerStream = (st: MediaStream, pid: string) => { try { onAudio(pid, st); } catch {} };
+  room.onPeerJoin = (pid: string) => {
+    try { hello.send({ pub: me?.id || '', name: me?.name || 'Гость' }, { target: pid }); } catch {}
+  };
+  room.onPeerLeave = (pid: string) => { peers.delete(pid); emit(); };
+  const stream: MediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  try { await Promise.all(room.addStream(stream) as Promise<void>[]); } catch {}
+  // announce to whoever is already inside
+  try { hello.send({ pub: me?.id || '', name: me?.name || 'Гость' }); } catch {}
+  return {
+    setMuted: (m: boolean) => { stream.getAudioTracks().forEach(tr => { tr.enabled = !m; }); },
+    onPeers: (cb: (p: VoicePeer[]) => void) => { peersCb = cb; emit(); },
+    leave: () => {
+      try { stream.getTracks().forEach(tr => tr.stop()); } catch {}
+      try { room.leave(); } catch {}
+    },
+  };
 }

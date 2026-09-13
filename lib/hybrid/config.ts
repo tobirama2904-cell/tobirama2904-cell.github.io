@@ -29,15 +29,22 @@ export const T_POST = 'legion';
 export const T_STORY = 'legion-story';
 export const T_ANN = 'legion-announce';
 export const T_BOT = 'legion-bot';
+export const T_EVENT = 'legion-event';
+export const T_VOICE = 'legion-voice';
 export const grpTag = (id: string) => 'legion-grp-' + id.replace(/^(grp:|nip29:)/, '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40);
 
 // Admin accounts (email allowlist; bound to claimed pubkeys via banlist.json)
 export const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || 'tobirama2904@gmail.com')
   .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 // Optional: Telegram login widget bot + bot token features (storage/notify). Empty = hidden/off.
+// Runtime overrides (admin pastes once in Admin -> Telegram, stored on-device):
+function ls(k: string): string { try { return localStorage.getItem(k) || ''; } catch { return ''; } }
 export const TG_BOT = process.env.NEXT_PUBLIC_TG_BOT || '';
 export const TG_BOT_TOKEN = process.env.NEXT_PUBLIC_TG_BOT_TOKEN || '';
 export const TG_STORAGE_CHAT = process.env.NEXT_PUBLIC_TG_STORAGE_CHAT || '';
+export function tgBot(): string { return TG_BOT || ls('legion-tg-bot'); }
+export function tgToken(): string { return TG_BOT_TOKEN || ls('legion-tg-token'); }
+export function tgChat(): string { return TG_STORAGE_CHAT || ls('legion-tg-chat'); }
 // Agnes AI direct from browser
 export const AGNES_BASE = process.env.NEXT_PUBLIC_AGNES_BASE || 'https://apihub.agnes-ai.com/v1';
 export const AGNES_KEY_BUILD = process.env.NEXT_PUBLIC_AGNES_KEY || '';

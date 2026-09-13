@@ -1,7 +1,7 @@
 // Notifications: derived live from Nostr events (likes, follows, DMs, mentions,
 // announcements), stored on-device. Offline fallback: Telegram bot ping.
 import { nsub, ts } from './nostr';
-import { RELAYS, TG_BOT_TOKEN, T_ANN } from './config';
+import { RELAYS, tgToken, T_ANN } from './config';
 import { loadSession } from './identity';
 import type { Notification } from '../supabase/types';
 
@@ -78,9 +78,10 @@ export function startNotifyEngine() {
 }
 async function tgPing(text: string) {
   const s = loadSession();
-  if (!s?.tg || !TG_BOT_TOKEN) return;
+  const tok = tgToken();
+  if (!s?.tg || !tok) return;
   try {
-    await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
+    await fetch(`https://api.telegram.org/bot${tok}/sendMessage`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: s.tg.id, text }),
     });

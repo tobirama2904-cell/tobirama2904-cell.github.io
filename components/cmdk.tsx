@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AnimatePresence, motion } from 'framer-motion';
-import { MessageSquare, Newspaper, MessagesSquare, Mic, Clapperboard, Brain, Zap, BarChart3, Users, ShieldCheck, Sun, Moon, LogIn, UserPlus, Sparkles, Home } from 'lucide-react';
+import { MessageSquare, Newspaper, MessagesSquare, Mic, Clapperboard, Brain, Zap, BarChart3, Users, ShieldCheck, Sun, Moon, LogIn, UserPlus, Sparkles, Home, Plus, PlaySquare, User } from 'lucide-react';
 import { useStore } from '@/lib/store';
 
 export function Cmdk() {
@@ -14,6 +14,14 @@ export function Cmdk() {
   const router = useRouter();
   const [q, setQ] = useState('');
   const [sel, setSel] = useState(0);
+  const [people, setPeople] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    if (q.trim().length < 2 || !open) { setPeople([]); return; }
+    const t = setTimeout(() => {
+      import('@/lib/hybrid/social').then(m => m.searchProfiles(q.trim()).then(r => setPeople(r.map(p => ({ id: p.id, name: p.name })))).catch(() => {}));
+    }, 450);
+    return () => clearTimeout(t);
+  }, [q, open]);
   const inputRef = useRef<HTMLInputElement>(null);
   const items = useMemo(() => {
     const go = (href: string, label: string) => ({ icon: Home, label, hint: 'страница', run: () => { router.push(href); } });
@@ -28,6 +36,10 @@ export function Cmdk() {
       { ...go('/stats', 'Статистика'), icon: BarChart3 },
       { ...go('/users', 'Люди'), icon: Users },
       { ...go('/bots', 'AI-Боты'), icon: Sparkles },
+      { ...go('/create', 'Создать пост/клип'), icon: Plus },
+      { ...go('/clips', 'Клипы'), icon: PlaySquare },
+      ...(me && !me.guest ? [{ ...go(`/profile?id=${me.id}`, 'Мой профиль'), icon: User }] : []),
+      ...people.map(p => ({ icon: User, label: '👤 ' + p.name, hint: 'человек', run: () => { router.push('/profile?id=' + p.id); } })),
       { icon: Sun, label: 'Сменить тему', hint: 'оформление', run: toggleTheme },
       { icon: Sparkles, label: 'Copilot-помощник', hint: 'AI', run: () => setCopilot(true) },
       ...(me?.role === 'admin' ? [{ ...go('/admin', 'Админка'), icon: ShieldCheck }] : []),

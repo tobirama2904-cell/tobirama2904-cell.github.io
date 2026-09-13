@@ -6,6 +6,8 @@ const nextConfig: NextConfig = {
   output: 'export',
   trailingSlash: true,
   images: { unoptimized: true },
+  // 2GB CI/sandbox: one static worker or the OOM-killer strikes
+  experimental: { cpus: 1 },
 };
 
 export default nextConfig;

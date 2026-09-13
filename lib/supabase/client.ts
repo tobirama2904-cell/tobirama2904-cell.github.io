@@ -3,7 +3,7 @@
 // All existing UI keeps working — data flows over Nostr/Trystero/P2P instead.
 import * as ID from '../hybrid/identity';
 import {
-  getProfile, listProfiles, saveProfile, getPosts, publishPost, deletePost, setLike,
+  getProfile, listProfiles, saveProfile, getPosts, publishPost, deletePost, setLike, addTomb,
   publishRepost, getComments, publishComment, getFollowing, setFollow, followersOf,
   blockUser, getStories, publishStory, publishReport, getReports, resolveReportLocal,
   publishAnnouncement, getAnnouncements, listBots, createBot, bumpBotUses,
@@ -385,6 +385,7 @@ class QB {
       const cid = this.fval('convo_id');
       if (id) {
         // best-effort Nostr deletion + local tombstone
+        try { addTomb(String(id)); } catch {}
         try {
           const { npublish } = await import('../hybrid/nostr');
           if (me) await npublish({ kind: 5, content: 'del', tags: [['e', String(id)]] }, me.sk).catch(() => {});
@@ -508,6 +509,7 @@ const auth = {
   async signUp({ email, password, options }: { email: string; password: string; options?: { data?: { name?: string } } }) {
     try {
       const s = await ID.signUp(email, password, options?.data?.name || email.split('@')[0]);
+      try { localStorage.setItem('legion-id-seen-' + s.id, '1'); } catch {}
       await saveProfile({ name: s.name }).catch(() => {});
       try {
         const bl = await loadBanlist();
@@ -525,10 +527,15 @@ const auth = {
     try {
       const s = await ID.signIn(email, password);
       // verify the account exists on relays (wrong password => unknown pubkey)
+      // two attempts: slow relays must not lock out real users
       try {
         const { nquery } = await import('../hybrid/nostr');
-        const { READ_RELAYS } = await import('../hybrid/config');
-        const evs = await nquery({ kinds: [0], authors: [s.id], limit: 1 }, READ_RELAYS, 6000);
+        const { READ_RELAYS, RELAYS } = await import('../hybrid/config');
+        let evs = await nquery({ kinds: [0], authors: [s.id], limit: 1 }, READ_RELAYS, 6000);
+        if (!evs[0]) {
+          try { localStorage.setItem('legion-login-retry', '1'); } catch {}
+          evs = await nquery({ kinds: [0], authors: [s.id], limit: 1 }, RELAYS, 10000);
+        }
         if (!evs[0]) {
           const prev = (() => { try { return localStorage.getItem('legion-id-seen-' + s.id); } catch { return null; } })();
           if (!prev) {
