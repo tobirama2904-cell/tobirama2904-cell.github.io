@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Send, Mic, Paperclip, Phone, PhoneOff, Smile, Reply, Pin, Search, Plus, Sparkles, Languages, Timer, ArrowLeft, Users, MessageSquare, Video, Globe, Trash2, Forward, BarChart3, Link2, X, UserPlus, Check } from 'lucide-react';
+import { Send, Mic, Paperclip, Phone, PhoneOff, Smile, Reply, Pin, Search, Plus, Sparkles, Languages, Timer, ArrowLeft, Users, MessageSquare, Video, Globe, Trash2, Forward, BarChart3, Link2, X, UserPlus, Check, Flame } from 'lucide-react';
 import { useStore } from '@/lib/store';
 import { Avatar, Button, Empty } from './ui/primitives';
 import { Dialog } from './ui/overlays';
@@ -80,6 +80,8 @@ export function Messenger() {
   const [amAdmin, setAmAdmin] = useState(false);
   const [torrentUrls, setTorrentUrls] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
+  const [instantMode, setInstantMode] = useState(false);
+  const [instantOpen, setInstantOpen] = useState<string[]>([]);
   const bottom = useRef<HTMLDivElement>(null);
   const callRef = useRef<CallClient | null>(null);
   const remoteAudio = useRef<HTMLAudioElement>(null);
@@ -203,7 +205,7 @@ export function Messenger() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convos.length]);
 
-  const sendRouter = async (cid: string, f: { kind?: Message['kind']; text: string; media_url?: string | null; reply_to?: string | null; disappear_at?: string | null }): Promise<Message | null> => {
+  const sendRouter = async (cid: string, f: { kind?: Message['kind']; text: string; media_url?: string | null; reply_to?: string | null; disappear_at?: string | null; instant?: boolean | null }): Promise<Message | null> => {
     const c = listConvos().find(x => x.id === cid);
     if (!c) return null;
     if (c.kind === 'dm') { const p = dmPeerOf(c); return p ? sendDm(p, f) : null; }
@@ -274,17 +276,33 @@ export function Messenger() {
     setUpBusy(true);
     try {
       let url: string;
-      if (f.size > 8_000_000) {
+      const instant = instantMode && (kind === 'image' || kind === 'video');
+      if (f.size > 8_000_000 && !instant) {
         url = await seedFile(f); // big file -> P2P torrent magnet
       } else {
         url = await uploadFile(f);
       }
-      await sendRouter(active, { kind, text: kind === 'file' ? `📎 ${f.name}` : f.name, media_url: url });
+      const dis = instant ? new Date(Date.now() + 24 * 3600e3).toISOString() : null;
+      await sendRouter(active, { kind, text: instant ? '👁‍🔥 Мгновение' : (kind === 'file' ? `📎 ${f.name}` : f.name), media_url: url, disappear_at: dis, instant: instant || null });
+      if (instant) setInstantMode(false);
       refreshConvos();
     } catch {
       alert('Загрузка не удалась');
     }
     setUpBusy(false);
+  };
+  const openInstant = (m: Message) => {
+    if (instantOpen.includes(m.id)) return;
+    setInstantOpen(prev => [...prev, m.id]);
+    setTimeout(() => {
+      try {
+        addTomb(m.id);
+        const s = loadSession();
+        if (s) npublish({ kind: 5, content: 'burn', tags: [['e', m.id]] }, s.sk).catch(() => {});
+      } catch {}
+      setMsgs(prev => prev.filter(x => x.id !== m.id));
+      setInstantOpen(prev => prev.filter(x => x !== m.id));
+    }, 8000);
   };
   const toggleRec = async () => {
     if (rec) { rec.stop(); setRec(null); return; }
@@ -448,10 +466,16 @@ export function Messenger() {
               {!mine && <div className="text-[10px] font-bold text-zinc-400 mb-0.5 ml-1">{profOf(m.sender_id)?.name || ''}</div>}
               {reply && <div className="text-xs text-zinc-500 border-l-2 border-blue-500 pl-2 ml-1 mb-1 truncate max-w-64">{reply.text.slice(0, 80)}</div>}
               <div className={`rounded-2xl px-3.5 py-2 text-[14.5px] leading-relaxed ${mine ? 'bg-blue-600 text-white rounded-br-md' : m.kind === 'ai' ? 'bg-violet-500/12 border border-violet-500/25 rounded-bl-md whitespace-pre-wrap' : m.kind === 'system' ? 'bg-amber-500/10 border border-amber-500/25 rounded-bl-md text-[13px]' : 'bg-zinc-100 dark:bg-white/8 rounded-bl-md'}`}>
-                {m.kind === 'image' && m.media_url && (isMagnet(m.media_url)
+                {m.instant && m.media_url && !mine && !instantOpen.includes(m.id) && <button onClick={() => openInstant(m)} className="flex flex-col items-center gap-1 rounded-xl bg-black/70 text-white px-6 py-5 mb-1 min-w-52">
+                  <Flame size={28} className="text-orange-500" />
+                  <b className="text-sm">👁‍🔥 Мгновение</b>
+                  <span className="text-[11px] opacity-70">нажми — сгорит через 8 сек</span>
+                </button>}
+                {m.instant && m.media_url && !mine && instantOpen.includes(m.id) && <div className="text-[11px] font-bold text-orange-500 mb-1 animate-pulse">🔥 открыто — сейчас сгорит…</div>}
+                {m.kind === 'image' && m.media_url && !(m.instant && !mine && !instantOpen.includes(m.id)) && (isMagnet(m.media_url)
                   ? <button onClick={() => openTorrent(m.media_url!)} className="underline">🧲 P2P-фото (нажми чтобы загрузить)</button>
                   : <img src={m.media_url} alt="" className="rounded-xl max-h-64 mb-1" />)}
-                {m.kind === 'video' && m.media_url && (isMagnet(m.media_url)
+                {m.kind === 'video' && m.media_url && !(m.instant && !mine && !instantOpen.includes(m.id)) && (isMagnet(m.media_url)
                   ? <button onClick={() => openTorrent(m.media_url!)} className="underline">🧲 P2P-видео (нажми чтобы загрузить)</button>
                   : <video src={m.media_url} controls className="rounded-xl max-h-64 mb-1" />)}
                 {m.kind === 'voice' && m.media_url && (isMagnet(m.media_url)
@@ -493,12 +517,14 @@ export function Messenger() {
         {replyTo && <div className="px-4 py-1.5 text-xs bg-zinc-100 dark:bg-white/5 flex items-center gap-2">↩️ {replyTo.text.slice(0, 60)}<button onClick={() => setReplyTo(null)} className="ml-auto font-bold">✕</button></div>}
         {disappear > 0 && <div className="px-4 py-1 text-[11px] font-bold text-amber-500">⏳ Сообщения исчезнут через {disappear} сек</div>}
         {upBusy && <div className="px-4 py-1 text-[11px] font-bold text-blue-500 animate-pulse">⬆ Загружаю файл…</div>}
+        {instantMode && <div className="px-4 py-1 text-[11px] font-bold text-orange-500">👁‍🔥 Режим мгновения: следующее фото/видео сгорит после просмотра</div>}
         <div className="p-3 flex gap-2 border-t border-zinc-200 dark:border-white/10">
           <label className="size-11 grid place-items-center rounded-xl border border-zinc-200 dark:border-white/10 hover:border-blue-500 cursor-pointer transition shrink-0" title="Файл (большие — через P2P)">
             <Paperclip size={17} /><input type="file" hidden onChange={e => { const f = e.target.files?.[0]; if (f) upload(f, f.type.startsWith('image') ? 'image' : f.type.startsWith('video') ? 'video' : f.type.startsWith('audio') ? 'voice' : 'file'); e.target.value = ''; }} />
           </label>
           <button onClick={toggleRec} className={`size-11 grid place-items-center rounded-xl border transition shrink-0 ${rec ? 'bg-rose-500 text-white border-rose-500 animate-pulse' : 'border-zinc-200 dark:border-white/10 hover:border-blue-500'}`} title="Голосовое"><Mic size={17} /></button>
           <button onClick={() => setPollOpen(true)} className="size-11 grid place-items-center rounded-xl border border-zinc-200 dark:border-white/10 hover:border-blue-500 transition shrink-0" title="Опрос"><BarChart3 size={17} /></button>
+          <button onClick={() => setInstantMode(!instantMode)} className={`size-11 grid place-items-center rounded-xl border transition shrink-0 ${instantMode ? 'bg-orange-500 text-white border-orange-500' : 'border-zinc-200 dark:border-white/10 hover:border-orange-500'}`} title="Мгновение: следующее фото/видео сгорит после просмотра"><Flame size={17} /></button>
           <DictateButton onText={t => setInput(v => (v ? v + ' ' : '') + t)} />
           <input value={input} onChange={e => { setInput(e.target.value); onType(); }} onKeyDown={e => e.key === 'Enter' && send()} placeholder="Сообщение…" className="flex-1 min-w-0 h-11 rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-4 outline-none focus:border-blue-500 font-medium" />
           <Button size="icon" className="!size-11 !rounded-xl shrink-0" onClick={send}><Send size={17} /></Button>

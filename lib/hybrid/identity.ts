@@ -53,7 +53,7 @@ async function derive(email: string, pass: string): Promise<{ sk: string; pub: s
 
 export async function signUp(email: string, pass: string, name: string): Promise<Session> {
   const { sk, pub } = await derive(email, pass);
-  const s: Session = { id: pub, email: email.trim(), name: name.trim() || 'Без имени', avatar: null, sk, method: 'pass' };
+  const s: Session = { id: pub, email: email.trim().toLowerCase(), name: name.trim() || 'Без имени', avatar: null, sk, method: 'pass' };
   saveSession(s);
   return s;
 }
@@ -61,7 +61,7 @@ export async function signIn(email: string, pass: string): Promise<Session> {
   const { sk, pub } = await derive(email, pass);
   const prev = loadSession();
   const s: Session = {
-    id: pub, email: email.trim(),
+    id: pub, email: email.trim().toLowerCase(),
     name: prev && prev.id === pub ? prev.name : (email.split('@')[0] || 'Без имени'),
     avatar: prev && prev.id === pub ? prev.avatar : null,
     sk, method: 'pass', tg: prev && prev.id === pub ? prev.tg : undefined,

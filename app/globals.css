@@ -55,3 +55,8 @@ input, textarea, select, button { font-size: max(14px, 1em); touch-action: manip
 @media (hover: none) {
   .group .group-hover\:flex { display: flex !important; }
 }
+
+/* ---------- v22: kill stray frames on touch gestures ---------- */
+html, body { overscroll-behavior: none; }
+body { touch-action: manipulation; }
+.chat-scroll, .clips-scroll { overscroll-behavior-y: contain; }

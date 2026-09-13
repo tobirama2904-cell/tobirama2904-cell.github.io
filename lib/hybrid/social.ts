@@ -222,6 +222,7 @@ export function parsePost(e: NEvent): Post {
   if (m) text = text.slice(0, m.index).trim();
   return {
     id: e.id, author_id: e.pubkey, text, image_url: image, video_url: video,
+    kindTag: tag(e, 'legion-kind') || null,
     likes: 0, comments: 0, reposts: 0, created_at: iso(e.created_at),
   };
 }
@@ -283,12 +284,20 @@ export async function getPosts(opts: { author?: string; limit?: number; since?: 
     } catch {}
   }
   await fillCounts(list);
-  return list;
+  return mergeLocal(list, p => !opts.author || p.author_id === opts.author);
 }
-export async function publishPost(text: string, image_url?: string | null, video_url?: string | null): Promise<Post | null> {
+export function extractTags(text: string): string[] {
+  try {
+    const m = text.match(/#[\p{L}\p{N}_]{2,30}/gu) || [];
+    return [...new Set(m.map(t => t.slice(1).toLowerCase()))].slice(0, 8);
+  } catch { return []; }
+}
+export async function publishPost(text: string, image_url?: string | null, video_url?: string | null, extraTags?: string[][]): Promise<Post | null> {
   const s = loadSession();
   if (!s) return null;
   const tagsArr: string[][] = [['t', T_POST]];
+  extractTags(text).forEach(t => tagsArr.push(['t', t]));
+  (extraTags || []).forEach(t => tagsArr.push(t));
   let content = text;
   if (image_url) { tagsArr.push(['image', image_url]); content = text ? text + '\n' + image_url : image_url; }
   if (video_url) { tagsArr.push(['video', video_url]); content = text ? text + '\n' + video_url : video_url; }
@@ -302,6 +311,7 @@ export async function deletePost(id: string): Promise<void> {
   const s = loadSession();
   if (s) await npublish({ kind: 5, content: 'del', tags: [['e', id]] }, s.sk).catch(() => {});
   addTomb(id);
+  forgetLocalPost(id);
 }
 export async function setLike(postId: string, authorPub: string, on: boolean): Promise<void> {
   const s = loadSession();
@@ -325,10 +335,26 @@ export async function getComments(postId: string): Promise<Comment[]> {
   const evs = await nquery({ kinds: [1], '#e': [postId], limit: 200 }, RELAYS, 6000);
   let hidden: Set<string> = new Set();
   try { hidden = new Set((await loadBanlist()).hidden || []); } catch {}
-  return evs
+  const list = evs
     .filter(e => !isTomb(e.id) && !hidden.has(e.id) && e.tags.some(t => t[0] === 'e' && t[1] === postId))
     .map(e => ({ id: e.id, post_id: postId, author_id: e.pubkey, text: e.content, created_at: iso(e.created_at) }))
     .sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at));
+  return mergeLocal(list, p => p.post_id === postId);
+}
+export async function getPostsByTag(raw: string): Promise<Post[]> {
+  const t = raw.replace(/^#/, '').toLowerCase().slice(0, 30);
+  if (!t) return [];
+  const evs = await nquery({ kinds: [1], '#t': [t], limit: 60 }, RELAYS, 7000);
+  let hidden: Set<string> = new Set();
+  let banned: Set<string> = new Set();
+  try {
+    const bl = await loadBanlist();
+    hidden = new Set(bl.hidden || []);
+    banned = new Set(bl.banned || []);
+  } catch {}
+  const list = evs.filter(e => !isTomb(e.id) && !hidden.has(e.id) && !banned.has(e.pubkey)).map(parsePost);
+  await fillCounts(list);
+  return mergeLocal(list, p => Array.isArray(p._tags) && (p._tags as string[]).includes(t));
 }
 export async function publishComment(postId: string, authorPub: string, text: string): Promise<Comment | null> {
   const s = loadSession();
@@ -337,7 +363,9 @@ export async function publishComment(postId: string, authorPub: string, text: st
     { kind: 1, content: text, tags: [['e', postId, '', 'root'], ['p', authorPub], ['t', T_POST]] }, s.sk,
   );
   if (!ok) return null;
-  return { id: event.id, post_id: postId, author_id: s.id, text, created_at: iso(event.created_at) };
+  const c = { id: event.id, post_id: postId, author_id: s.id, text, created_at: iso(event.created_at) };
+  rememberLocalPost(c);
+  return c;
 }
 
 // ---------- follows (kind 3) / mutes (kind 10000) ----------
@@ -379,12 +407,13 @@ export async function getStories(): Promise<Story[]> {
   const cutoff = Date.now() - 24 * 3600e3;
   let hidden: Set<string> = new Set();
   try { hidden = new Set((await loadBanlist()).hidden || []); } catch {}
-  return evs
+  const list = evs
     .filter(e => !isTomb(e.id) && !hidden.has(e.id) && e.created_at * 1000 > cutoff)
     .map(e => ({
       id: e.id, author_id: e.pubkey, image_url: tag(e, 'image') || null, text: e.content,
       created_at: iso(e.created_at), expires_at: new Date(e.created_at * 1000 + 24 * 3600e3).toISOString(),
     }));
+  return mergeLocal(list);
 }
 export async function publishStory(text: string, image_url?: string | null): Promise<Story | null> {
   const s = loadSession();
@@ -393,10 +422,12 @@ export async function publishStory(text: string, image_url?: string | null): Pro
   if (image_url) tg.push(['image', image_url]);
   const { event, ok } = await npublish({ kind: 1, content: text, tags: tg }, s.sk);
   if (!ok) return null;
-  return {
+  const st = {
     id: event.id, author_id: s.id, image_url: image_url || null, text,
     created_at: iso(event.created_at), expires_at: new Date(event.created_at * 1000 + 24 * 3600e3).toISOString(),
   };
+  rememberLocalPost(st);
+  return st;
 }
 export async function unblockUser(pub: string): Promise<void> {
   const s = loadSession();
@@ -552,7 +583,33 @@ export function onLocalPost(cb: PostCb): () => void {
   postBus.add(cb);
   return () => { postBus.delete(cb); };
 }
-function emitLocalPost(p: Post) { postBus.forEach(f => { try { f(p); } catch {} }); }
+// locally-published posts cache: merged into query results so own posts never
+// vanish while relays propagate (dropped once relay copy arrives or after 30 min)
+const LOCAL_K = 'legion-local-posts-v1';
+interface LocalMem { id: string; author_id: string; created_at: string; [k: string]: unknown }
+function readLocal(): LocalMem[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LOCAL_K) || '[]') as LocalMem[];
+    return Array.isArray(raw) ? raw.filter(x => x && x.id) : [];
+  } catch { return []; }
+}
+function rememberLocalPost(p: { id: string; author_id: string; created_at: string; text?: string; post_id?: string }) {
+  try {
+    const mem: LocalMem = { ...(p as unknown as LocalMem), _tags: extractTags(p.text || '') };
+    const all = [mem, ...readLocal().filter(x => x.id !== p.id)].slice(0, 40);
+    localStorage.setItem(LOCAL_K, JSON.stringify(all));
+  } catch {}
+}
+function mergeLocal<T extends { id: string; author_id: string; created_at: string }>(list: T[], keep?: (p: LocalMem) => boolean): T[] {
+  const ids = new Set(list.map(p => p.id));
+  const now = Date.now();
+  const fresh = readLocal().filter(p => !ids.has(p.id) && now - +new Date(p.created_at) < 30 * 60e3 && (!keep || keep(p))) as unknown as T[];
+  return [...fresh, ...list];
+}
+function forgetLocalPost(id: string) {
+  try { localStorage.setItem(LOCAL_K, JSON.stringify(readLocal().filter(x => x.id !== id))); } catch {}
+}
+function emitLocalPost(p: Post) { rememberLocalPost(p); postBus.forEach(f => { try { f(p); } catch {} }); }
 export function subPosts(cb: (p: Post) => void): () => void {
   const off = onLocalPost(cb);
   const unsub = nsub(RELAYS, { kinds: [1], '#t': [T_POST], since: ts() }, e => {

