@@ -77,6 +77,7 @@ export function Stories() {
         <motion.div initial={{ scale: 0.9 }} animate={{ scale: 1 }} className="relative w-full max-w-sm aspect-[9/14] rounded-3xl overflow-hidden bg-gradient-to-br from-violet-600 via-blue-600 to-cyan-500 grid place-items-center p-8 text-center" onClick={e => e.stopPropagation()}>
           {view.image_url && <img src={view.image_url} alt="" className="absolute inset-0 w-full h-full object-cover" />}
           {view.image_url && <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-black/30" />}
+          {view.video_url && <video src={view.video_url} autoPlay muted loop playsInline className="absolute inset-0 w-full h-full object-cover" />}
           <button onClick={() => setView(null)} className="absolute top-4 right-4 text-white/80 z-10"><X /></button>
           {me.id === view.author_id && <button onClick={() => del(view)} className="absolute top-4 left-4 text-white/80 z-10" title="Удалить"><Trash2 size={18} /></button>}
           <div className="relative z-10">

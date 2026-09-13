@@ -6,7 +6,7 @@ import { useStore } from '@/lib/store';
 import { Button, Empty, Textarea } from '@/components/ui/primitives';
 import { Tabs } from '@/components/ui/overlays';
 import { publishPost, publishStory } from '@/lib/hybrid/social';
-import { uploadFile } from '@/lib/hybrid/storage';
+import { uploadFile, compressImage, compressVideo } from '@/lib/hybrid/storage';
 
 function agnesKey(): string {
   try { return localStorage.getItem('legion-agnes-key') || ''; } catch { return ''; }
@@ -24,6 +24,7 @@ export default function CreatePage() {
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState('');
   const [prompt, setPrompt] = useState('');
+  const [err, setErr] = useState('');
   const [genImg, setGenImg] = useState('');
   const [genBusy, setGenBusy] = useState(false);
 
@@ -37,19 +38,27 @@ export default function CreatePage() {
     if (tab !== 'text' && tab !== 'art' && !file) return;
     if (tab === 'art' && !genImg) return;
     setBusy(true);
+    setErr('');
     try {
       let url = genImg;
       if (file && tab !== 'art') {
-        setStep('⬆ Загружаю файл…');
-        url = await uploadFile(file);
+        let f = file;
+        if (f.type.startsWith('image/') && f.size > 1_000_000) { setStep('🗜 Сжимаю фото…'); f = await compressImage(f); }
+        if (f.type.startsWith('video/') && f.size > 12_000_000) { setStep('🎬 Сжимаю видео…'); f = await compressVideo(f, t => setStep(t)); }
+        setStep(`⬆ Загружаю (${(f.size / 1048576).toFixed(1)} МБ)… 0%`);
+        url = await uploadFile(f, (pct, host) => setStep(`⬆ ${host} · ${pct}%`));
+        if (!url) throw new Error('empty-url');
       }
       setStep('📡 Публикую…');
-      const isVideo = tab === 'video' || (file?.type.startsWith('video'));
-      if (dest === 'story') await publishStory(caption.trim() || (isVideo ? '🎬' : '📸'), url || null);
-      else await publishPost(caption.trim(), !isVideo ? url || null : null, isVideo ? url || null : null);
+      const isVideo = tab === 'video' || !!file?.type.startsWith('video');
+      let ok: unknown = null;
+      if (dest === 'story') ok = await publishStory(caption.trim() || (isVideo ? '🎬' : '📸'), isVideo ? null : (url || null), isVideo ? (url || null) : null);
+      else ok = await publishPost(caption.trim(), !isVideo ? url || null : null, isVideo ? url || null : null);
+      if (!ok) throw new Error('relay-down');
       router.push(dest === 'story' ? '/feed' : isVideo ? '/clips' : '/feed');
-    } catch {
-      alert('Не вышло — проверь сеть');
+    } catch (e) {
+      const m = String(e);
+      setErr(m.includes('upload-failed') ? 'Файл не загрузился: все бесплатные хосты недоступны. Уменьши файл или попробуй позже.' : m.includes('relay-down') ? 'Файл загружен, но релеи не приняли пост. Попробуй ещё раз.' : 'Не вышло — проверь сеть и попробуй снова');
     }
     setBusy(false);
     setStep('');
@@ -94,7 +103,8 @@ export default function CreatePage() {
         <Button onClick={generate} disabled={genBusy || !prompt.trim()}>{genBusy ? 'Рисую…' : '🎨'}</Button>
       </div>
       {genImg && <img src={genImg} alt="" className="mt-3 rounded-2xl w-full max-h-[50vh] object-contain bg-black/5" />}
-      {!genImg && <div className="text-xs text-zinc-500 mt-2">Нужен Agnes-ключ (AI Чат → Ключ). Генерация бесплатная.</div>}
+      {!genImg && !agnesKey() && <a href="https://platform.agnes-ai.com/settings/apiKeys" target="_blank" rel="noreferrer" className="mt-2 flex items-center justify-center gap-2 h-10 rounded-xl bg-gradient-to-r from-violet-600 to-blue-500 text-white text-sm font-bold">🔑 Получить бесплатный Agnes-ключ</a>}
+      {!genImg && !!agnesKey() && <div className="text-xs text-zinc-500 mt-2">Ключ вставлен — можно генерировать.</div>}
     </div>}
     <div className="glass rounded-2xl p-4 mt-3">
       <Textarea value={caption} onChange={e => setCaption(e.target.value)} placeholder="Подпись…" rows={2} maxLength={2000} />
@@ -104,6 +114,7 @@ export default function CreatePage() {
           <button onClick={() => setDest('story')} className={`px-4 py-2 ${dest === 'story' ? 'bg-blue-600 text-white' : 'text-zinc-500'}`}>📸 История</button>
         </div>
         <Button onClick={publish} disabled={busy} className="ml-auto"><Send size={15} /> {busy ? step || '…' : 'Опубликовать'}</Button>
+      {err && <div className="w-full text-[13px] font-semibold text-rose-500 bg-rose-500/10 rounded-xl px-3 py-2">{err}</div>}
       </div>
     </div>
   </div>;

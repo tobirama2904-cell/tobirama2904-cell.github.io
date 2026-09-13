@@ -85,6 +85,9 @@ export default function ChatPage() {
     {showKey && <div className="mb-3 rounded-xl glass p-3 flex gap-2">
       <input value={key} onChange={e => { setKey(e.target.value); try { localStorage.setItem('legion-agnes-key', e.target.value); } catch {} }} placeholder="Agnes API key (sk-...)" type="password" className="flex-1 bg-transparent outline-none text-sm font-mono" />
     </div>}
+    {!key && <a href="https://platform.agnes-ai.com/settings/apiKeys" target="_blank" rel="noreferrer" className="mb-3 flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 via-blue-600 to-cyan-500 text-white p-3.5 text-sm font-bold shadow-lg shadow-blue-600/25 hover:scale-[1.01] active:scale-99 transition">
+      🔑 Нет ключа? Получи бесплатный Agnes-ключ за минуту — и Легион заговорит
+    </a>}
     <Thread key={(bot?.id || 'legion') + '|' + key + '|' + (me?.id || 'guest')} bot={bot} apiKey={key} meName={me?.name || 'ВЫ'} uid={me?.id || 'guest'} />
   </div>;
 }

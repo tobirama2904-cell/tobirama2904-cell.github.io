@@ -50,6 +50,16 @@ export function Messenger() {
   const [input, setInput] = useState('');
   const inputRef = useRef('');
   const DRAFTS_K = 'legion-drafts-v1';
+  const THEMES = ['', 'bg-gradient-to-b from-sky-500/10 via-transparent to-blue-600/10', 'bg-gradient-to-b from-violet-500/10 via-transparent to-fuchsia-600/10', 'bg-gradient-to-b from-emerald-500/10 via-transparent to-teal-600/10', 'bg-gradient-to-b from-orange-500/10 via-transparent to-rose-600/10', 'bg-gradient-to-b from-zinc-500/10 via-transparent to-zinc-800/20'];
+  const THEME_K = 'legion-theme-v1';
+  const [themeIdx, setThemeIdx] = useState(0);
+  const loadTheme = (cid: string): number => { try { return (JSON.parse(localStorage.getItem(THEME_K) || '{}') as Record<string, number>)[cid] || 0; } catch { return 0; } };
+  const cycleTheme = () => {
+    if (!active) return;
+    const n = (themeIdx + 1) % THEMES.length;
+    setThemeIdx(n);
+    try { const all = JSON.parse(localStorage.getItem(THEME_K) || '{}'); all[active] = n; localStorage.setItem(THEME_K, JSON.stringify(all)); } catch {}
+  };
   const [readDmAt, setReadDmAt] = useState<string | null>(null);
   const [roomReads, setRoomReads] = useState<Record<string, string>>({});
   const rxThrottle = useRef<Record<string, number>>({});
@@ -227,7 +237,7 @@ export function Messenger() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [msgs, active]);
-  useEffect(() => { setReadDmAt(null); setRoomReads({}); if (active) { const d = loadDraft(active); setInput(d); inputRef.current = d; } }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setReadDmAt(null); setRoomReads({}); if (active) { const d = loadDraft(active); setInput(d); inputRef.current = d; setThemeIdx(loadTheme(active)); } }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { bottom.current?.scrollIntoView(); }, [msgs.length]);
   // incoming calls
   useEffect(() => {
@@ -550,6 +560,7 @@ export function Messenger() {
             <button title="Видеозвонок" onClick={() => me && callRef.current?.callVideo(myPub, me.name, convoPeer)} className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-white/10 text-emerald-500"><Video size={17} /></button>
           </>}
           <button title="Поиск" onClick={() => setShowSearch(!showSearch)} className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-white/10 text-zinc-500"><Search size={17} /></button>
+          <button title="Тема чата" onClick={cycleTheme} className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-white/10 text-zinc-500">🎨</button>
           <button title="Саммари от AI" onClick={() => aiAction('sum')} className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-white/10 text-violet-500"><Sparkles size={17} /></button>
           <button title="Спросить Легиона" onClick={() => aiAction('ask')} className="hidden sm:block p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-white/10 text-violet-500"><MessageSquare size={17} /></button>
           <button title="Перевод" onClick={() => aiAction('tr')} className="hidden sm:block p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-white/10 text-blue-500"><Languages size={17} /></button>
@@ -565,7 +576,7 @@ export function Messenger() {
         </div>}
         {videoCall && callState === 'in-call' && <video ref={remoteVideo} autoPlay playsInline className="w-full max-h-64 bg-black object-contain" />}
         {showSearch && <div className="px-4 py-2 border-b border-zinc-200 dark:border-white/10"><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Поиск по сообщениям…" className="w-full h-9 rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 text-sm outline-none" /></div>}
-        <div ref={anim} className="min-h-0 flex-1 overflow-y-auto p-4 flex flex-col gap-2 chat-scroll">
+        <div ref={anim} className={`min-h-0 flex-1 overflow-y-auto p-4 flex flex-col gap-2 chat-scroll ${THEMES[themeIdx] || ''}`}>
           {loading && <div className="text-sm text-zinc-500 text-center py-4 animate-pulse">Загружаю с релеев…</div>}
           {filtered.map(m => {
             const mine = m.sender_id === myPub;

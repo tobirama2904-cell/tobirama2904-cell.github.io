@@ -10,7 +10,7 @@ import { timeAgo } from '@/lib/utils';
 import { nip19 } from 'nostr-tools';
 import {
   getProfile, saveProfile, getPosts, getFollowing, followersOf, setFollow,
-  blockUser, unblockUser, mutedList,
+  blockUser, unblockUser, mutedList, setPin, getPin, publishView, getViews,
 } from '@/lib/hybrid/social';
 import { uploadFile } from '@/lib/hybrid/storage';
 import { exportNsec, signOut } from '@/lib/hybrid/identity';
@@ -42,6 +42,8 @@ function Inner() {
   const [blocked, setBlocked] = useState<string[]>([]);
   const [online, setOnline] = useState<string[]>([]);
   const [copied, setCopied] = useState('');
+  const [pinId, setPinId] = useState<string | null>(null);
+  const [viewsN, setViewsN] = useState(0);
   const [busy, setBusy] = useState(false);
   const [genBusy, setGenBusy] = useState(false);
   const [upBusy, setUpBusy] = useState('');
@@ -60,6 +62,9 @@ function Inner() {
       if (!prof) return;
       setP(prof);
       setPosts(ps);
+      getPin(id).then(v => setPinId(v)).catch(() => {});
+      if (!mine) publishView('profile:' + id);
+      getViews('profile:' + id).then(n => setViewsN(n)).catch(() => {});
       setCounts({ followers: fers.length, following: fing.length });
       setBlocked(muted);
       if (mine) {
@@ -178,7 +183,13 @@ function Inner() {
       <h2 className="font-bold mt-5 mb-2">Фото · {ph.length}</h2>
       <div className="grid grid-cols-3 gap-1.5 mb-1">{ph.slice(0, 9).map(x => <img key={x.id} src={x.image_url!} alt="" loading="lazy" className="aspect-square w-full object-cover rounded-xl" />)}</div>
     </> : null; })()}
-    <h2 className="font-bold mt-5 mb-2">Посты · {posts.length}</h2>
+    <h2 className="font-bold mt-5 mb-2">Посты · {posts.length} <span className="text-xs font-sans font-bold text-zinc-400">👁 {viewsN}</span></h2>
+    {!hiddenByPrivacy && pinId && posts.some(x => x.id === pinId) && (() => { const px = posts.find(x => x.id === pinId)!; return <div className="glass rounded-2xl p-4 mb-2.5 border-blue-500/40">
+      <div className="text-[11px] font-bold text-blue-500 mb-1">📌 ЗАКРЕПЛЕНО</div>
+      <p className="text-[15px] whitespace-pre-wrap">{px.text}</p>
+      {px.image_url && <img src={px.image_url} alt="" className="mt-2 rounded-xl max-h-64 w-full object-cover" />}
+      {px.video_url && <video src={px.video_url} controls className="mt-2 rounded-xl max-h-64 w-full" />}
+    </div>; })()}
     <div className="flex flex-col gap-2.5 pb-10">
       {hiddenByPrivacy && <Empty icon="🔒" title="Приватный профиль" sub="Подпишись, чтобы видеть посты" />}
       {!hiddenByPrivacy && posts.length === 0 && <Empty icon="📝" title="Постов нет" />}
@@ -186,7 +197,7 @@ function Inner() {
         <p className="text-[15px] whitespace-pre-wrap">{x.text}</p>
         {x.image_url && <img src={x.image_url} alt="" className="mt-2 rounded-xl max-h-64 w-full object-cover" />}
         {x.video_url && <video src={x.video_url} controls className="mt-2 rounded-xl max-h-64 w-full" />}
-        <div className="text-xs text-zinc-500 mt-1.5">❤️ {x.likes} · 💬 {x.comments} · 🔁 {x.reposts} · {timeAgo(x.created_at)}</div>
+        <div className="text-xs text-zinc-500 mt-1.5">❤️ {x.likes} · 💬 {x.comments} · 🔁 {x.reposts} · {timeAgo(x.created_at)}{mine && <button onClick={async () => { const v = pinId === x.id ? null : x.id; await setPin(v); setPinId(v); }} className="ml-2 font-bold text-blue-500">{pinId === x.id ? 'Открепить' : '📌 Закрепить'}</button>}</div>
       </div>)}
     </div>
     <Dialog open={edit} onOpenChange={setEdit} title="Редактировать профиль">

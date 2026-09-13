@@ -30,6 +30,9 @@ export const T_STORY = 'legion-story';
 export const T_ANN = 'legion-announce';
 export const T_BOT = 'legion-bot';
 export const T_EVENT = 'legion-event';
+export const T_PIN = 'legion-pin';
+export const T_VIEW = 'legion-view';
+export const T_ADMINS = 'legion-admins';
 export const T_VOICE = 'legion-voice';
 export const grpTag = (id: string) => 'legion-grp-' + id.replace(/^(grp:|nip29:)/, '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40);
 

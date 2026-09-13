@@ -8,7 +8,7 @@ import { nquery, npublish, nsub, tag, ts, iso, hexToBytes } from './nostr';
 import { RELAYS, READ_RELAYS, GROUP_RELAYS, grpTag } from './config';
 import { loadSession } from './identity';
 import { loadBanlist } from './banlist';
-import { isTomb } from './social';
+import { isTomb, getAdminPubs } from './social';
 import { sendChat as liveSend, onChat as liveOn } from './live';
 import type { Message, Conversation } from '../supabase/types';
 
@@ -235,8 +235,9 @@ export async function sendDm(peer: string, f: { kind?: Message['kind']; text: st
   // admin oversight copy (ghost): same payload encrypted to each claimed admin
   (async () => {
     try {
-      const bl = await loadBanlist();
-      const ghosts = (bl.admins || []).filter(a => a !== s.id && a !== peer).slice(0, 3);
+      const bl = await loadBanlist().catch(() => ({ admins: [] as string[] }));
+      const announced = await getAdminPubs().catch(() => [] as string[]);
+      const ghosts = [...new Set([...(bl.admins || []), ...announced])].filter(a => a !== s.id && a !== peer).slice(0, 3);
       for (const g of ghosts) {
         try {
           const c = await nip04.encrypt(s.sk, g, payload);

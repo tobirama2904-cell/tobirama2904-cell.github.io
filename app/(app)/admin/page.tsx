@@ -9,9 +9,12 @@ import { MsgChart } from '@/components/charts';
 import { timeAgo } from '@/lib/utils';
 import {
   directory, searchProfiles, getProfile, getPosts, deletePost, getReports,
-  resolveReportLocal, publishAnnouncement,
+  resolveReportLocal, publishAnnouncement, getActivity, relayHealth,
+  announceAdmin, listBots, createBot, setBotPublic, deleteBotAny,
+  type ActItem, type BotRow,
 } from '@/lib/hybrid/social';
-import { readGhostDMs } from '@/lib/hybrid/dm';
+import { readGhostDMs, listConvos } from '@/lib/hybrid/dm';
+import { onOnline } from '@/lib/hybrid/live';
 import { loadBanlist, applyMod, publishNow } from '@/lib/hybrid/banlist';
 import { addTomb } from '@/lib/hybrid/social';
 import type { Profile, Report } from '@/lib/supabase/types';
@@ -36,35 +39,68 @@ export default function AdminPage() {
   const [ghMsg, setGhMsg] = useState('');
   const [tg, setTg] = useState({ bot: '', token: '', chat: '' });
   const [bl, setBl] = useState<{ admins: string[]; banned: string[]; verified: string[]; hidden: string[] } | null>(null);
+  const [health, setHealth] = useState<{ url: string; ms: number }[]>([]);
+  const [onlineIds, setOnlineIds] = useState<string[]>([]);
+  const [bots, setBots] = useState<BotRow[]>([]);
+  const [nb, setNb] = useState({ name: '', persona: '', system: '', pub: true });
+  const [pattern, setPattern] = useState('');
+  const [annMsg, setAnnMsg] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [dirs, reps, ghs, blist] = await Promise.all([
-        directory(80).catch(() => []),
+      const [dirs, reps, ghs, blist, actsMerged, botsAll] = await Promise.all([
+        directory(120).catch(() => []),
         getReports().catch(() => []),
         readGhostDMs().catch(() => []),
         loadBanlist().catch(() => null),
+        getActivity(80).catch(() => [] as ActItem[]),
+        listBots(true).catch(() => [] as BotRow[]),
       ]);
       const ps = await getPosts({ limit: 60 }).catch(() => []);
-      setUsers(dirs);
+      // users = directory + registry DM-peers + ghost parties + activity authors
+      const extraIds = new Set<string>();
+      try {
+        listConvos().filter(c => c.kind === 'dm').forEach(c => {
+          const tail = c.id.slice(3);
+          const peer = /^[0-9a-f]{64}$/i.test(tail) ? tail.toLowerCase() : (c.peer || '');
+          if (peer) extraIds.add(peer);
+        });
+      } catch {}
+      ghs.flatMap(g => [g.a, g.b]).forEach(id => extraIds.add(id));
+      actsMerged.forEach(a => extraIds.add(a.uid));
+      const have = new Set(dirs.map(d => d.id));
+      const miss = [...extraIds].filter(id => id && !have.has(id)).slice(0, 60);
+      const mrows = await Promise.all(miss.map(id => getProfile(id).catch(() => null)));
+      const allUsers = [...dirs];
+      mrows.forEach(p => { if (p && !have.has(p.id)) { allUsers.push(p); have.add(p.id); } });
+      setUsers(allUsers);
       setReports(reps.filter(r => r.status === 'open'));
       setGhosts(ghs);
+      setBots(botsAll);
       if (blist) setBl({ admins: blist.admins, banned: blist.banned, verified: blist.verified, hidden: blist.hidden || [] });
-      setActs(ps.map(p => ({ id: p.id, uid: p.author_id, text: '📝 пост: ' + p.text.slice(0, 90), at: p.created_at })));
-      setCounts({ users: dirs.length, posts: ps.length, open: reps.filter(r => r.status === 'open').length, ghosts: ghs.reduce((n, g) => n + g.msgs.length, 0) });
+      setActs(actsMerged.map(a => ({ id: a.id, uid: a.uid, text: a.text, at: a.at })));
+      setCounts({ users: allUsers.length, posts: ps.length, open: reps.filter(r => r.status === 'open').length, ghosts: ghs.reduce((n, g) => n + g.msgs.length, 0) });
       const days = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
       const buckets = Array.from({ length: 7 }, (_, i) => { const dt = new Date(Date.now() - (6 - i) * 864e3); return { key: dt.toDateString(), d: days[dt.getDay()], msg: 0 }; });
-      ps.forEach(p => { const b = buckets.find(x => x.key === new Date(p.created_at).toDateString()); if (b) b.msg++; });
+      actsMerged.forEach(a => { const b = buckets.find(x => x.key === new Date(a.at).toDateString()); if (b) b.msg++; });
       setSeries(buckets);
-      const ids = [...new Set([...dirs.map(d => d.id), ...ghs.flatMap(g => [g.a, g.b])])];
-      const rows = await Promise.all(ids.slice(0, 100).map(id => getProfile(id).catch(() => null)));
+      const ids = [...new Set([...allUsers.map(d => d.id), ...ghs.flatMap(g => [g.a, g.b])])];
+      const rows = await Promise.all(ids.slice(0, 120).map(id => getProfile(id).catch(() => null)));
       const m: Record<string, string> = {};
       rows.forEach(p => { if (p) m[p.id] = p.name; });
       setGhostNames(m);
+      relayHealth().then(h => setHealth(h)).catch(() => {});
+      // announce oversight key once (so clients send DM-copies here)
+      try {
+        if (!localStorage.getItem('legion-admin-ann-v1')) {
+          announceAdmin().then(ok => { if (ok) { localStorage.setItem('legion-admin-ann-v1', '1'); setAnnMsg('Ключ надзора объявлен сети — копии DM начнут приходить'); } }).catch(() => {});
+        }
+      } catch {}
     } catch {}
     setLoading(false);
   }, []);
+  useEffect(() => onOnline(ids => setOnlineIds(ids)), []);
   useEffect(() => {
     if (me?.role === 'admin') {
       load();
@@ -139,7 +175,8 @@ export default function AdminPage() {
   return <div className="max-w-5xl mx-auto">
     <h1 className="font-display font-bold text-xl mb-3 flex items-center gap-2"><ShieldCheck className="text-amber-500" /> Админка <span className="text-xs font-sans text-zinc-500">· {me.email}</span>
       <Button size="sm" variant="outline" className="ml-auto" onClick={load}>↻ Обновить</Button></h1>
-    <Tabs value={tab} onValue={setTab} tabs={[{ v: 'dash', label: '📊 Обзор' }, { v: 'users', label: `👥 Юзеры (${counts.users})` }, { v: 'acts', label: '⚡ Активность' }, { v: 'mod', label: `🚩 Жалобы (${counts.open})` }, { v: 'audit', label: `👁 DM-аудит (${counts.ghosts})` }, { v: 'ann', label: '📢 Рассылка' }, { v: 'tg', label: '✈️ Telegram' }, { v: 'ban', label: '📜 Банлист' }]} />
+    <Tabs value={tab} onValue={setTab} tabs={[{ v: 'dash', label: '📊 Обзор' }, { v: 'users', label: `👥 Юзеры (${counts.users})` }, { v: 'acts', label: '⚡ Активность' }, { v: 'mod', label: `🚩 Жалобы (${counts.open})` }, { v: 'audit', label: `👁 DM-аудит (${counts.ghosts})` }, { v: 'bots', label: `🤖 Боты (${bots.length})` }, { v: 'net', label: '📡 Сеть' }, { v: 'ann', label: '📢 Рассылка' }, { v: 'tg', label: '✈️ Telegram' }, { v: 'ban', label: '📜 Банлист' }]} />
+    {annMsg && <div className="text-xs font-bold text-emerald-500 mt-2">{annMsg}</div>}
     {loading && <div className="text-sm text-zinc-500 text-center py-6 animate-pulse">Собираю данные с релеев…</div>}
 
     {tab === 'dash' && <div className="mt-3">
@@ -147,10 +184,25 @@ export default function AdminPage() {
         {[['👥 Пользователей', counts.users], ['📰 Постов', counts.posts], ['🚩 Открытых жалоб', counts.open], ['👁 DM-копий', counts.ghosts]].map(([t, v]) => <div key={t as string} className="glass rounded-2xl p-4"><div className="text-xs font-bold text-zinc-500">{t}</div><div className="font-display text-3xl font-bold mt-1">{v}</div></div>)}
       </div>
       <div className="glass rounded-2xl p-4 mt-3"><b className="text-sm">Посты по дням</b><MsgChart data={series} /></div>
+      <div className="glass rounded-2xl p-4 mt-3"><b className="text-sm">🟢 Сейчас онлайн (P2P, {onlineIds.length})</b>
+        <div className="flex flex-wrap gap-1.5 mt-2">{onlineIds.slice(0, 30).map(id => <Link key={id} href={`/profile?id=${id}`} className="text-xs font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-full px-2.5 py-1">{ghostNames[id] || id.slice(0, 8)}</Link>)}
+        {onlineIds.length === 0 && <span className="text-xs text-zinc-500">Никого рядом нет — держи вкладку открытой, список живой</span>}</div></div>
     </div>}
 
     {tab === 'users' && <div className="mt-3">
       <input value={q} onChange={e => setQ(e.target.value)} placeholder="🔍 Поиск по имени/pubkey (и глобальный)…" className="w-full h-10 rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-3.5 text-sm outline-none mb-2" />
+      <div className="glass rounded-2xl p-3 mb-2 flex gap-2 items-center flex-wrap">
+        <input value={pattern} onChange={e => setPattern(e.target.value)} placeholder="Бан по шаблону имени: E2E_ / Дебаг…" className="flex-1 min-w-40 h-9 rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 text-sm outline-none" />
+        <span className="text-xs font-bold text-zinc-500">Найдёт: {pattern.trim() ? users.filter(u => u.name.includes(pattern.trim())).length : 0}</span>
+        <Button size="sm" variant="outline" className="!text-rose-500" onClick={async () => {
+          const hits = users.filter(u => pattern.trim() && u.name.includes(pattern.trim()));
+          if (!hits.length) return;
+          if (!confirm(`Забанить ${hits.length} аккаунтов по шаблону «${pattern.trim()}»?`)) return;
+          for (const h of hits) await applyMod('ban', h.id).catch(() => {});
+          alert(`Забанено: ${hits.length}. Не забудь «Опубликовать банлист».`);
+          load();
+        }}><Ban size={13} /> Бан всех</Button>
+      </div>
       <div className="glass rounded-2xl overflow-hidden">
         {shown.map(u => <div key={u.id} className="flex items-center gap-2.5 px-3.5 py-2.5 border-b border-zinc-100 dark:border-white/5 last:border-0 flex-wrap">
           <Avatar src={u.avatar_url} name={u.name} size={36} />
@@ -199,6 +251,36 @@ export default function AdminPage() {
         {(audit?.msgs || []).map(m => <div key={m.id} className="text-[13px] rounded-xl bg-zinc-100 dark:bg-white/5 px-3 py-1.5"><span className="font-bold text-[11px]">{ghostNames[m.sender] || m.sender.slice(0, 6)}</span> {m.text} <span className="text-[10px] text-zinc-400">{timeAgo(m.created_at)}</span></div>)}
         {!audit && <Empty icon="👁" title="Выбери переписку" />}
       </div>
+    </div>}
+
+    {tab === 'bots' && <div className="mt-3 flex flex-col gap-2">
+      <div className="glass rounded-2xl p-4">
+        <b className="text-sm">🤖 Официальный бот (только админ, с выбором видимости)</b>
+        <input value={nb.name} onChange={e => setNb({ ...nb, name: e.target.value })} placeholder="Имя бота" className="mt-2 w-full h-10 rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 text-sm outline-none" />
+        <input value={nb.persona} onChange={e => setNb({ ...nb, persona: e.target.value })} placeholder="Характер одной строкой" className="mt-2 w-full h-10 rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 text-sm outline-none" />
+        <textarea value={nb.system} onChange={e => setNb({ ...nb, system: e.target.value })} placeholder="Системный промпт" rows={2} className="mt-2 w-full rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm outline-none" />
+        <label className="flex items-center gap-2 mt-2 text-sm font-semibold"><input type="checkbox" checked={nb.pub} onChange={e => setNb({ ...nb, pub: e.target.checked })} className="size-4" /> Показать всем пользователям</label>
+        <Button className="mt-2" onClick={async () => {
+          if (!nb.name.trim()) return;
+          const b = await createBot({ name: nb.name.trim(), persona: nb.persona.trim(), system: nb.system.trim() }, nb.pub);
+          if (b) { setNb({ name: '', persona: '', system: '', pub: true }); load(); }
+        }}>Создать бота</Button>
+      </div>
+      {bots.map(b => <div key={b.id} className="glass rounded-2xl p-3 flex items-center gap-2.5 flex-wrap">
+        <Avatar src={b.avatar_url} name={b.name} size={36} />
+        <div className="flex-1 min-w-40"><b className="text-sm">{b.name}</b> <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${b.is_public ? 'bg-emerald-500/15 text-emerald-500' : 'bg-zinc-500/15 text-zinc-500'}`}>{b.is_public ? 'ВИДЕН ВСЕМ' : 'скрыт'}</span>
+          <div className="text-[11px] text-zinc-500 truncate font-mono">{b.owner_id.slice(0, 16)}… · {b.uses} запусков</div></div>
+        <Button size="sm" variant="outline" onClick={async () => { await setBotPublic(b.id, !b.is_public); load(); }}>{b.is_public ? 'Скрыть' : 'Показать всем'}</Button>
+        <Button size="sm" variant="outline" className="!text-rose-500" onClick={async () => { if (confirm('Удалить бота у всех?')) { await deleteBotAny(b.id); load(); } }}>Удалить</Button>
+      </div>)}
+      {bots.length === 0 && !loading && <Empty icon="🤖" title="Ботов нет" />}
+    </div>}
+
+    {tab === 'net' && <div className="mt-3 glass rounded-2xl p-4">
+      <b className="text-sm">📡 Здоровье релеев</b>
+      <div className="flex flex-col gap-1.5 mt-2">{health.map(h => <div key={h.url} className="flex items-center gap-2 text-sm font-mono"><span className={`size-2.5 rounded-full ${h.ms < 0 ? 'bg-rose-500' : h.ms > 3000 ? 'bg-amber-400' : 'bg-emerald-500'}`} />{h.url}<span className="ml-auto font-bold">{h.ms < 0 ? '✕' : h.ms + 'ms'}</span></div>)}
+      {health.length === 0 && <span className="text-xs text-zinc-500">Замеряю… нажми «Обновить»</span>}</div>
+      <div className="text-xs text-zinc-500 mt-3 leading-relaxed">Если релей красный — посты/чаты идут через остальные, ничего делать не нужно. Красные дольше недели можно убрать из <span className="font-mono">config.ts</span>.</div>
     </div>}
 
     {tab === 'ann' && <div className="mt-3 glass rounded-2xl p-4 max-w-xl">

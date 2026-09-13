@@ -2,7 +2,7 @@ export type Role = 'user' | 'moderator' | 'admin';
 export interface Profile { id: string; email: string; name: string; avatar_url: string | null; cover_url: string | null; bio: string; status: string; role: Role; verified: boolean; is_private: boolean; last_seen: string; created_at: string; }
 export interface Post { id: string; author_id: string; text: string; image_url: string | null; video_url?: string | null; kindTag?: string | null; likes: number; comments: number; reposts: number; created_at: string; author?: Profile; liked?: boolean; reposted?: boolean; }
 export interface Comment { id: string; post_id: string; author_id: string; text: string; created_at: string; author?: Profile; }
-export interface Story { id: string; author_id: string; image_url: string | null; text: string; created_at: string; expires_at: string; author?: Profile; }
+export interface Story { id: string; author_id: string; image_url: string | null; video_url?: string | null; text: string; created_at: string; expires_at: string; author?: Profile; }
 export interface Follow { follower_id: string; followee_id: string; created_at: string; }
 export interface Conversation { id: string; kind: 'dm' | 'group' | 'channel'; title: string; avatar_url: string | null; owner_id: string | null; created_at: string; last_msg?: string; last_at?: string; unread?: number; }
 export interface Message { id: string; convo_id: string; sender_id: string; kind: 'text' | 'image' | 'video' | 'file' | 'voice' | 'system' | 'ai' | 'poll'; text: string; media_url: string | null; reply_to: string | null; disappear_at: string | null; instant?: boolean; pinned?: boolean; round?: boolean; created_at: string; sender?: Profile; reactions?: Record<string, string[]>; }

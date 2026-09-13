@@ -1,5 +1,5 @@
 /* LEGION PWA: cache immutable bundles + media hosts. HTML + JSON always fresh. */
-const C = 'legion-v26-1';
+const C = 'legion-v27-1';
 self.addEventListener('install', e => { self.skipWaiting(); });
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== C && k !== 'legion-rt').map(k => caches.delete(k)))).then(() => self.clients.claim()));

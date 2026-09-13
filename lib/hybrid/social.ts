@@ -2,7 +2,7 @@
 // kind-6 reposts, kind-7 likes, kind-3 follows, kind-10000 mutes, kind-1984 reports.
 import { nip19, type Event as NEvent } from 'nostr-tools';
 import { nquery, npublish, nsub, tag, tags, ts, iso } from './nostr';
-import { T_POST, T_STORY, T_ANN, T_BOT, T_EVENT, READ_RELAYS, RELAYS, ADMIN_EMAILS } from './config';
+import { T_POST, T_STORY, T_ANN, T_BOT, T_EVENT, T_PIN, T_VIEW, T_ADMINS, READ_RELAYS, RELAYS, ADMIN_EMAILS } from './config';
 import { loadSession } from './identity';
 import { loadBanlist } from './banlist';
 import type { Profile, Post, Comment, Story, Report } from '../supabase/types';
@@ -143,6 +143,11 @@ export async function directory(limit = 60): Promise<Profile[]> {
     const evs = await nquery(f as never, READ_RELAYS, 6000);
     const latest = new Map<string, NEvent>();
     [...evs].reverse().forEach(e => latest.set(e.pubkey, e));
+    // unfiltered sweep: catch registered users who never posted
+    try {
+      const extra = await nquery({ kinds: [0], limit: 200 }, READ_RELAYS, 6000);
+      [...extra].reverse().forEach(e => { if (!latest.has(e.pubkey)) latest.set(e.pubkey, e); });
+    } catch {}
     latest.forEach((e, pub) => {
       if (banned.has(pub)) return;
       let j: K0 = {};
@@ -190,6 +195,18 @@ export async function searchProfiles(q: string): Promise<Profile[]> {
         created_at: iso(e.created_at), last_seen: iso(e.created_at),
       });
       if (out.length >= 20) break;
+    }
+    if (out.length < 5) {
+      // NIP-50 rarely supported: scan directory locally
+      try {
+        const dirs = await directory(120);
+        const ql = query.toLowerCase();
+        for (const d of dirs) {
+          if (out.some(o => o.id === d.id)) continue;
+          if ((d.name + ' ' + d.id).toLowerCase().includes(ql)) out.push(d);
+          if (out.length >= 20) break;
+        }
+      } catch {}
     }
     return out;
   } catch { return []; }
@@ -418,20 +435,21 @@ export async function getStories(): Promise<Story[]> {
   const list = evs
     .filter(e => !isTomb(e.id) && !hidden.has(e.id) && !banned.has(e.pubkey) && e.created_at * 1000 > cutoff)
     .map(e => ({
-      id: e.id, author_id: e.pubkey, image_url: tag(e, 'image') || null, text: e.content,
+      id: e.id, author_id: e.pubkey, image_url: tag(e, 'image') || null, video_url: tag(e, 'video') || null, text: e.content,
       created_at: iso(e.created_at), expires_at: new Date(e.created_at * 1000 + 24 * 3600e3).toISOString(),
     }));
   return mergeLocal(list);
 }
-export async function publishStory(text: string, image_url?: string | null): Promise<Story | null> {
+export async function publishStory(text: string, image_url?: string | null, video_url?: string | null): Promise<Story | null> {
   const s = loadSession();
   if (!s) return null;
   const tg: string[][] = [['t', T_STORY]];
   if (image_url) tg.push(['image', image_url]);
+  if (video_url) tg.push(['video', video_url]);
   const { event, ok } = await npublish({ kind: 1, content: text, tags: tg }, s.sk);
   if (!ok) return null;
   const st = {
-    id: event.id, author_id: s.id, image_url: image_url || null, text,
+    id: event.id, author_id: s.id, image_url: image_url || null, video_url: video_url || null, text,
     created_at: iso(event.created_at), expires_at: new Date(event.created_at * 1000 + 24 * 3600e3).toISOString(),
   };
   rememberLocalPost(st);
@@ -458,10 +476,11 @@ export async function listEvents(): Promise<LegionEvent[]> {
   const me = loadSession()?.id;
   const evs = await nquery({ kinds: [1], '#t': [T_EVENT], limit: 100 }, RELAYS, 6000);
   let hidden: Set<string> = new Set();
-  try { hidden = new Set((await loadBanlist()).hidden || []); } catch {}
+  let banned: Set<string> = new Set();
+  try { const bl = await loadBanlist(); hidden = new Set(bl.hidden || []); banned = new Set(bl.banned || []); } catch {}
   const out: LegionEvent[] = [];
   for (const e of evs) {
-    if (isTomb(e.id) || hidden.has(e.id)) continue;
+    if (isTomb(e.id) || hidden.has(e.id) || banned.has(e.pubkey)) continue;
     try {
       const j = JSON.parse(e.content);
       if (!j.title) continue;
@@ -520,7 +539,9 @@ export function resolveReportLocal(id: string, status: string) {
 export async function getReports(): Promise<Report[]> {
   const evs = await nquery({ kinds: [1984], limit: 200 }, RELAYS, 6000);
   const res = resolved();
-  return evs.map(e => ({
+  let banned: Set<string> = new Set();
+  try { banned = new Set((await loadBanlist()).banned || []); } catch {}
+  return evs.filter(e => !isTomb(e.id) && !banned.has(e.pubkey)).map(e => ({
     id: e.id, reporter_id: e.pubkey,
     target_kind: tag(e, 'legion-kind') || 'post',
     target_id: tag(e, 'e') || tag(e, 'legion-target') || '',
@@ -536,11 +557,14 @@ export async function publishAnnouncement(title: string, body: string): Promise<
   const { ok } = await npublish({ kind: 1, content: `${title}\n${body}`.slice(0, 2000), tags: [['t', T_ANN]] }, s.sk);
   return ok;
 }
-export async function getAnnouncements(): Promise<{ id: string; title: string; body: string; created_at: string }[]> {
-  const evs = await nquery({ kinds: [1], '#t': [T_ANN], limit: 20 }, RELAYS, 6000);
-  return evs.map(e => {
+export async function getAnnouncements(): Promise<{ id: string; title: string; body: string; author_id: string; created_at: string }[]> {
+  const evs = await nquery({ kinds: [1], '#t': [T_ANN], limit: 30 }, RELAYS, 6000);
+  let banned: Set<string> = new Set();
+  let hidden: Set<string> = new Set();
+  try { const bl = await loadBanlist(); banned = new Set(bl.banned || []); hidden = new Set(bl.hidden || []); } catch {}
+  return evs.filter(e => !isTomb(e.id) && !hidden.has(e.id) && !banned.has(e.pubkey)).map(e => {
     const [title, ...rest] = e.content.split('\n');
-    return { id: e.id, title, body: rest.join('\n'), created_at: iso(e.created_at) };
+    return { id: e.id, title, body: rest.join('\n'), author_id: e.pubkey, created_at: iso(e.created_at) };
   });
 }
 
@@ -551,37 +575,165 @@ function localBots(): BotRow[] {
   try { return JSON.parse(localStorage.getItem(BOTS_K) || '[]'); } catch { return []; }
 }
 function saveLocalBots(b: BotRow[]) { try { localStorage.setItem(BOTS_K, JSON.stringify(b.slice(0, 100))); } catch {} }
-export async function listBots(): Promise<BotRow[]> {
+export async function listBots(includePrivate = false): Promise<BotRow[]> {
   const map = new Map<string, BotRow>();
+  const me = loadSession()?.id || '';
   localBots().forEach(b => map.set(b.id, b));
+  let banned: Set<string> = new Set();
+  try { banned = new Set((await loadBanlist()).banned || []); } catch {}
   try {
     const evs = await nquery({ kinds: [30078], '#t': [T_BOT], limit: 100 }, RELAYS, 6000);
     for (const e of evs) {
       const d = tag(e, 'd');
-      if (!d || map.has(d)) continue;
+      if (!d || map.has(d) || banned.has(e.pubkey) || isTomb(d)) continue;
       try {
         const j = JSON.parse(e.content);
-        if (j.name) map.set(d, { id: d, owner_id: e.pubkey, name: j.name, avatar_url: j.avatar_url || null, persona: j.persona || '', system: j.system || '', is_public: true, uses: j.uses || 0, created_at: iso(e.created_at) });
+        if (!j.name || j.deleted) continue;
+        if (j.is_public === false && !includePrivate && e.pubkey !== me) continue;
+        map.set(d, { id: d, owner_id: e.pubkey, name: j.name, avatar_url: j.avatar_url || null, persona: j.persona || '', system: j.system || '', is_public: j.is_public !== false, uses: j.uses || 0, created_at: iso(e.created_at) });
       } catch {}
     }
   } catch {}
   return [...map.values()];
 }
-export async function createBot(b: { name: string; persona: string; system: string }): Promise<BotRow | null> {
+export async function createBot(b: { name: string; persona: string; system: string }, makePublic = false): Promise<BotRow | null> {
   const s = loadSession();
   if (!s) return null;
   const id = 'bot-' + s.id.slice(0, 8) + '-' + Date.now().toString(36);
-  const row: BotRow = { id, owner_id: s.id, name: b.name, avatar_url: null, persona: b.persona, system: b.system, is_public: true, uses: 0, created_at: new Date().toISOString() };
+  const row: BotRow = { id, owner_id: s.id, name: b.name, avatar_url: null, persona: b.persona, system: b.system, is_public: makePublic, uses: 0, created_at: new Date().toISOString() };
   const all = localBots();
   all.unshift(row);
   saveLocalBots(all);
-  await npublish({ kind: 30078, content: JSON.stringify(row), tags: [['d', id], ['t', T_BOT]] }, s.sk).catch(() => {});
+  if (makePublic) await npublish({ kind: 30078, content: JSON.stringify(row), tags: [['d', id], ['t', T_BOT]] }, s.sk).catch(() => {});
   return row;
+}
+export async function setBotPublic(id: string, makePublic: boolean): Promise<boolean> {
+  const s = loadSession();
+  if (!s) return false;
+  const all = localBots();
+  let row = all.find(x => x.id === id);
+  if (!row) {
+    const remote = (await listBots(true).catch(() => [])).find(x => x.id === id);
+    if (!remote) return false;
+    row = remote;
+  }
+  row.is_public = makePublic;
+  const ix = all.findIndex(x => x.id === id);
+  if (ix >= 0) all[ix] = row; else all.unshift(row);
+  saveLocalBots(all);
+  const { ok } = await npublish({ kind: 30078, content: JSON.stringify({ ...row, owner_id: row.owner_id }), tags: [['d', id], ['t', T_BOT]] }, s.sk).catch(() => ({ ok: false }));
+  return !!ok;
+}
+export async function deleteBotAny(id: string): Promise<void> {
+  const s = loadSession();
+  addTomb(id);
+  saveLocalBots(localBots().filter(x => x.id !== id));
+  if (s) await npublish({ kind: 30078, content: JSON.stringify({ deleted: true }), tags: [['d', id], ['t', T_BOT]] }, s.sk).catch(() => {});
 }
 export async function bumpBotUses(id: string): Promise<void> {
   const all = localBots();
   const b = all.find(x => x.id === id);
   if (b) { b.uses++; saveLocalBots(all); }
+}
+
+// ---------- activity (posts + stories + comments merged) ----------
+export interface ActItem { id: string; uid: string; type: 'post' | 'story' | 'comment'; text: string; at: string }
+export async function getActivity(limit = 80): Promise<ActItem[]> {
+  const out: ActItem[] = [];
+  const ps = await getPosts({ limit: 60 }).catch(() => []);
+  ps.forEach(p => out.push({ id: p.id, uid: p.author_id, type: 'post', text: '📝 пост: ' + (p.text || (p.video_url ? '🎬 видео' : p.image_url ? '📸 фото' : '')).slice(0, 90), at: p.created_at }));
+  const ss = await getStories().catch(() => []);
+  ss.forEach(x => out.push({ id: x.id, uid: x.author_id, type: 'story', text: '📸 история: ' + (x.text || '').slice(0, 90), at: x.created_at }));
+  const tops = ps.slice(0, 12);
+  const cgroups = await Promise.all(tops.map(p => getComments(p.id).catch(() => [] as Comment[])));
+  cgroups.flat().forEach(c => out.push({ id: c.id, uid: c.author_id, type: 'comment', text: '💬 коммент: ' + c.text.slice(0, 90), at: c.created_at }));
+  out.sort((a, b) => (a.at < b.at ? 1 : -1));
+  return out.slice(0, limit);
+}
+
+// ---------- pinned post (per-author 30078) ----------
+export async function setPin(postId: string | null): Promise<boolean> {
+  const s = loadSession();
+  if (!s) return false;
+  const { ok } = await npublish({ kind: 30078, content: JSON.stringify({ post: postId }), tags: [['d', T_PIN], ['t', T_PIN]] }, s.sk).catch(() => ({ ok: false }));
+  return !!ok;
+}
+export async function getPin(author: string): Promise<string | null> {
+  try {
+    const evs = await nquery({ kinds: [30078], authors: [author], '#d': [T_PIN], limit: 3 }, READ_RELAYS, 5000);
+    if (!evs.length) return null;
+    evs.sort((a, b) => b.created_at - a.created_at);
+    const j = JSON.parse(evs[0].content);
+    return typeof j.post === 'string' && j.post ? j.post : null;
+  } catch { return null; }
+}
+
+// ---------- views (kind 1 + legion-view, distinct authors) ----------
+const VIEW_K = 'legion-viewed-v1';
+function viewed(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem(VIEW_K) || '{}'); } catch { return {}; }
+}
+export function publishView(target: string): void {
+  const s = loadSession();
+  if (!s) return;
+  try {
+    const v = viewed();
+    const day = new Date().toDateString();
+    if (v[target] === day) return;
+    v[target] = day;
+    localStorage.setItem(VIEW_K, JSON.stringify(v));
+  } catch {}
+  npublish({ kind: 1, content: 'v', tags: [['t', T_VIEW], ['e', target]] }, s.sk).catch(() => {});
+}
+const viewsCache = new Map<string, { at: number; n: number }>();
+export async function getViews(target: string): Promise<number> {
+  const c = viewsCache.get(target);
+  if (c && Date.now() - c.at < 300000) return c.n;
+  try {
+    const evs = await nquery({ kinds: [1], '#t': [T_VIEW], limit: 500 }, READ_RELAYS, 5000);
+    const pubs = new Set<string>();
+    for (const e of evs) {
+      if (e.tags.some(t => t[0] === 'e' && t[1] === target)) pubs.add(e.pubkey);
+    }
+    viewsCache.set(target, { at: Date.now(), n: pubs.size });
+    return pubs.size;
+  } catch { return c?.n ?? 0; }
+}
+
+// ---------- admin oversight announce (so clients know ghost recipients) ----------
+export async function announceAdmin(): Promise<boolean> {
+  const s = loadSession();
+  if (!s) return false;
+  const { ok } = await npublish({ kind: 30078, content: JSON.stringify({ pub: s.id, at: Date.now() }), tags: [['d', T_ADMINS], ['t', T_ADMINS]] }, s.sk).catch(() => ({ ok: false }));
+  return !!ok;
+}
+let adminPubsCache: { at: number; pubs: string[] } = { at: 0, pubs: [] };
+export async function getAdminPubs(): Promise<string[]> {
+  if (Date.now() - adminPubsCache.at < 600000) return adminPubsCache.pubs;
+  try {
+    const evs = await nquery({ kinds: [30078], '#t': [T_ADMINS], limit: 20 }, RELAYS, 6000);
+    const fresh = Date.now() - 90 * 864e5;
+    const pubs = [...new Set(evs.map(e => {
+      try {
+        const j = JSON.parse(e.content);
+        return typeof j.pub === 'string' && /^[0-9a-f]{64}$/i.test(j.pub) && (j.at || 0) > fresh ? j.pub.toLowerCase() : '';
+      } catch { return ''; }
+    }).filter(Boolean))].slice(0, 3);
+    adminPubsCache = { at: Date.now(), pubs: pubs as string[] };
+    return pubs as string[];
+  } catch { return adminPubsCache.pubs; }
+}
+
+// ---------- relay health ----------
+export async function relayHealth(): Promise<{ url: string; ms: number }[]> {
+  const out = await Promise.all(RELAYS.map(async url => {
+    const t0 = Date.now();
+    try {
+      await nquery({ kinds: [0], limit: 1 }, [url], 6000);
+      return { url, ms: Date.now() - t0 };
+    } catch { return { url, ms: -1 }; }
+  }));
+  return out;
 }
 
 // ---------- realtime ----------
