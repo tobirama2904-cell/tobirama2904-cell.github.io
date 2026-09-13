@@ -130,6 +130,8 @@ export async function saveProfile(patch: { name?: string; bio?: string; status?:
 // ---------- directory: real LEGION people (post authors + kind-0s) ----------
 export async function directory(limit = 60): Promise<Profile[]> {
   const out = new Map<string, Profile>();
+  let banned: Set<string> = new Set();
+  try { banned = new Set((await loadBanlist()).banned || []); } catch {}
   let authors: string[] = [];
   try {
     const posts = await getPosts({ limit: 80 });
@@ -142,6 +144,7 @@ export async function directory(limit = 60): Promise<Profile[]> {
     const latest = new Map<string, NEvent>();
     [...evs].reverse().forEach(e => latest.set(e.pubkey, e));
     latest.forEach((e, pub) => {
+      if (banned.has(pub)) return;
       let j: K0 = {};
       try { j = JSON.parse(e.content); } catch {}
       if (!j.name && !j.picture) return;
@@ -173,8 +176,11 @@ export async function searchProfiles(q: string): Promise<Profile[]> {
   if (query.length < 2) return [];
   try {
     const evs = await nquery({ kinds: [0], search: query, limit: 20 } as never, RELAYS, 6000);
+    let banned: Set<string> = new Set();
+    try { banned = new Set((await loadBanlist()).banned || []); } catch {}
     const out: Profile[] = [];
     for (const e of evs) {
+      if (banned.has(e.pubkey)) continue;
       let j: K0 = {};
       try { j = JSON.parse(e.content); } catch {}
       if (!j.name && !j.picture) continue;
@@ -334,9 +340,10 @@ export async function publishRepost(postId: string, authorPub: string): Promise<
 export async function getComments(postId: string): Promise<Comment[]> {
   const evs = await nquery({ kinds: [1], '#e': [postId], limit: 200 }, RELAYS, 6000);
   let hidden: Set<string> = new Set();
-  try { hidden = new Set((await loadBanlist()).hidden || []); } catch {}
+  let banned: Set<string> = new Set();
+  try { const bl = await loadBanlist(); hidden = new Set(bl.hidden || []); banned = new Set(bl.banned || []); } catch {}
   const list = evs
-    .filter(e => !isTomb(e.id) && !hidden.has(e.id) && e.tags.some(t => t[0] === 'e' && t[1] === postId))
+    .filter(e => !isTomb(e.id) && !hidden.has(e.id) && !banned.has(e.pubkey) && e.tags.some(t => t[0] === 'e' && t[1] === postId))
     .map(e => ({ id: e.id, post_id: postId, author_id: e.pubkey, text: e.content, created_at: iso(e.created_at) }))
     .sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at));
   return mergeLocal(list, p => p.post_id === postId);
@@ -406,9 +413,10 @@ export async function getStories(): Promise<Story[]> {
   const evs = await nquery({ kinds: [1], '#t': [T_STORY], limit: 60 }, RELAYS, 6000);
   const cutoff = Date.now() - 24 * 3600e3;
   let hidden: Set<string> = new Set();
-  try { hidden = new Set((await loadBanlist()).hidden || []); } catch {}
+  let banned: Set<string> = new Set();
+  try { const bl = await loadBanlist(); hidden = new Set(bl.hidden || []); banned = new Set(bl.banned || []); } catch {}
   const list = evs
-    .filter(e => !isTomb(e.id) && !hidden.has(e.id) && e.created_at * 1000 > cutoff)
+    .filter(e => !isTomb(e.id) && !hidden.has(e.id) && !banned.has(e.pubkey) && e.created_at * 1000 > cutoff)
     .map(e => ({
       id: e.id, author_id: e.pubkey, image_url: tag(e, 'image') || null, text: e.content,
       created_at: iso(e.created_at), expires_at: new Date(e.created_at * 1000 + 24 * 3600e3).toISOString(),

@@ -30,6 +30,9 @@ const MOBILE_TABS = ['/chat', '/feed', '/messages', '/create', '/clips'];
 
 export function Sidebar() {
   const path = usePathname(), router = useRouter();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  const isActive = (href: string) => mounted && path === href;
   const { me, theme, toggleTheme, setCmdk, setCopilot, cloud } = useStore();
   const [unread, setUnread] = useState(0);
   const [sheet, setSheet] = useState(false);
@@ -57,7 +60,7 @@ export function Sidebar() {
       </Link>
       <nav className="flex flex-col gap-0.5 mt-1">
         {NAV.map(n => {
-          const active = path === n.href;
+          const active = isActive(n.href);
           return <Link key={n.href} href={n.href} className={`relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${active ? 'text-white' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/5'}`}>
             {active && <motion.span layoutId="nav-pill" className="absolute inset-0 rounded-xl bg-gradient-to-br from-blue-600 to-blue-500 shadow-lg shadow-blue-600/30" transition={{ type: 'spring', stiffness: 500, damping: 38 }} />}
             <n.icon size={18} className="relative z-10" />
@@ -65,12 +68,12 @@ export function Sidebar() {
             {n.href === '/messages' && unread > 0 && <span className="relative z-10 ml-auto text-[11px] bg-rose-500 text-white rounded-full min-w-5 h-5 grid place-items-center px-1 font-bold">{unread}</span>}
           </Link>;
         })}
-        <Link href={profileHref} className={`relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${path === '/profile' ? 'text-white' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/5'}`}>
-          {path === '/profile' && <motion.span layoutId="nav-pill" className="absolute inset-0 rounded-xl bg-gradient-to-br from-blue-600 to-blue-500 shadow-lg shadow-blue-600/30" transition={{ type: 'spring', stiffness: 500, damping: 38 }} />}
+        <Link href={profileHref} className={`relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${isActive('/profile') ? 'text-white' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/5'}`}>
+          {isActive('/profile') && <motion.span layoutId="nav-pill" className="absolute inset-0 rounded-xl bg-gradient-to-br from-blue-600 to-blue-500 shadow-lg shadow-blue-600/30" transition={{ type: 'spring', stiffness: 500, damping: 38 }} />}
           <User size={18} className="relative z-10" /><span className="relative z-10">Профиль</span>
         </Link>
-        {me?.role === 'admin' && <Link href="/admin" className={`relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${path === '/admin' ? 'text-white' : 'text-amber-600 dark:text-amber-400 hover:bg-amber-500/10'}`}>
-          {path === '/admin' && <motion.span layoutId="nav-pill" className="absolute inset-0 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 shadow-lg" transition={{ type: 'spring', stiffness: 500, damping: 38 }} />}
+        {me?.role === 'admin' && <Link href="/admin" className={`relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${isActive('/admin') ? 'text-white' : 'text-amber-600 dark:text-amber-400 hover:bg-amber-500/10'}`}>
+          {isActive('/admin') && <motion.span layoutId="nav-pill" className="absolute inset-0 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 shadow-lg" transition={{ type: 'spring', stiffness: 500, damping: 38 }} />}
           <ShieldCheck size={18} className="relative z-10" /><span className="relative z-10">Админка</span>
         </Link>}
       </nav>
@@ -93,19 +96,19 @@ export function Sidebar() {
     <nav className="lg:hidden fixed bottom-0 inset-x-0 z-40 glass border-x-0 border-b-0 border-t border-zinc-200 dark:border-white/10 px-1 pt-1.5 pb-[max(.5rem,env(safe-area-inset-bottom))] flex justify-around items-end">
       {MOBILE_TABS.slice(0, 2).map(href => {
         const n = NAV.find(x => x.href === href)!;
-        const active = path === n.href;
+        const active = isActive(n.href);
         return <Link key={n.href} href={n.href} className={`relative flex flex-col items-center gap-0.5 px-4 py-1.5 rounded-xl text-[10px] font-bold ${active ? 'text-blue-600 dark:text-blue-400' : 'text-zinc-400'}`}>
           <n.icon size={22} />{n.label}
           {n.href === '/messages' && unread > 0 && <span className="absolute top-0 right-2 text-[10px] bg-rose-500 text-white rounded-full min-w-5 h-5 grid place-items-center px-1 font-bold">{unread}</span>}
         </Link>;
       })}
       <Link href="/create" className="flex flex-col items-center gap-0.5 px-4 -mt-6">
-        <span className={`size-13 w-[52px] h-[52px] grid place-items-center rounded-2xl text-white shadow-xl shadow-blue-600/30 ${path === '/create' ? 'bg-blue-500' : 'bg-gradient-to-br from-blue-600 to-cyan-500'}`}><Plus size={24} /></span>
-        <span className={`text-[10px] font-bold ${path === '/create' ? 'text-blue-600 dark:text-blue-400' : 'text-zinc-400'}`}>Создать</span>
+        <span className={`size-13 w-[52px] h-[52px] grid place-items-center rounded-2xl text-white shadow-xl shadow-blue-600/30 ${isActive('/create') ? 'bg-blue-500' : 'bg-gradient-to-br from-blue-600 to-cyan-500'}`}><Plus size={24} /></span>
+        <span className={`text-[10px] font-bold ${isActive('/create') ? 'text-blue-600 dark:text-blue-400' : 'text-zinc-400'}`}>Создать</span>
       </Link>
       {MOBILE_TABS.slice(2).filter(h => h !== '/create').map(href => {
         const n = NAV.find(x => x.href === href)!;
-        const active = path === n.href;
+        const active = isActive(n.href);
         return <Link key={n.href} href={n.href} className={`flex flex-col items-center gap-0.5 px-4 py-1.5 rounded-xl text-[10px] font-bold ${active ? 'text-blue-600 dark:text-blue-400' : 'text-zinc-400'}`}>
           <n.icon size={22} />{n.label}
         </Link>;
@@ -130,12 +133,12 @@ export function Sidebar() {
           </Link>}
           <div className="grid grid-cols-4 gap-2">
             {[...NAV, { href: profileHref, icon: User, label: 'Профиль', k: '' }].map(n => {
-              const active = path === n.href;
+              const active = isActive(n.href);
               return <Link key={n.href + n.label} href={n.href} onClick={() => setSheet(false)} className={`flex flex-col items-center gap-1.5 rounded-2xl py-3 text-[11px] font-bold border transition ${active ? 'border-blue-500 text-blue-600 dark:text-blue-400 bg-blue-500/5' : 'border-zinc-200 dark:border-white/10 text-zinc-500'}`}>
                 <n.icon size={21} />{n.label}
               </Link>;
             })}
-            {me?.role === 'admin' && <Link href="/admin" onClick={() => setSheet(false)} className={`flex flex-col items-center gap-1.5 rounded-2xl py-3 text-[11px] font-bold border transition ${path === '/admin' ? 'border-amber-500 text-amber-500 bg-amber-500/5' : 'border-amber-500/40 text-amber-600 dark:text-amber-400'}`}>
+            {me?.role === 'admin' && <Link href="/admin" onClick={() => setSheet(false)} className={`flex flex-col items-center gap-1.5 rounded-2xl py-3 text-[11px] font-bold border transition ${isActive('/admin') ? 'border-amber-500 text-amber-500 bg-amber-500/5' : 'border-amber-500/40 text-amber-600 dark:text-amber-400'}`}>
               <ShieldCheck size={21} />Админка
             </Link>}
             <button onClick={() => { setSheet(false); setCopilot(true); }} className="flex flex-col items-center gap-1.5 rounded-2xl py-3 text-[11px] font-bold border border-violet-500/30 text-violet-500">

@@ -66,11 +66,13 @@ export const T_CHDIR = 'legion-channel';
 export interface LegionChannel { room: string; title: string; kind: 'group' | 'channel'; owner: string; created_at: string }
 export async function listLegionChannels(): Promise<LegionChannel[]> {
   const evs = await nquery({ kinds: [1], '#t': [T_CHDIR], limit: 100 }, RELAYS, 7000);
+  let banned: Set<string> = new Set();
+  try { banned = new Set((await loadBanlist()).banned || []); } catch {}
   const seen = new Set<string>();
   const out: LegionChannel[] = [];
   for (const e of evs) {
     const room = tag(e, 'legion-room');
-    if (!room || seen.has(room) || isTomb(e.id)) continue;
+    if (!room || seen.has(room) || isTomb(e.id) || banned.has(e.pubkey)) continue;
     seen.add(room);
     const k = tag(e, 'legion-chan-kind');
     out.push({ room, title: (e.content || room).slice(0, 80), kind: k === 'channel' ? 'channel' : 'group', owner: e.pubkey, created_at: iso(e.created_at) });
@@ -85,6 +87,21 @@ export function joinLegionChannel(ch: LegionChannel): ConvoEntry {
     c = {
       id: ch.room, kind: ch.kind, title: (ch.kind === 'channel' ? '📣 ' : '👥 ') + ch.title,
       avatar_url: null, owner_id: ch.owner, created_at: new Date().toISOString(),
+      members: [{ user_id: me, role: 'member' }],
+    };
+    reg.unshift(c);
+    saveRegistry(reg);
+  }
+  return c;
+}
+export function joinRoomById(room: string, kind: 'group' | 'channel', title: string): ConvoEntry {
+  const reg = loadRegistry();
+  let c = reg.find(x => x.id === room);
+  if (!c) {
+    const me = loadSession()?.id || '';
+    c = {
+      id: room, kind, title, avatar_url: null, owner_id: null,
+      created_at: new Date().toISOString(),
       members: [{ user_id: me, role: 'member' }],
     };
     reg.unshift(c);
@@ -192,9 +209,10 @@ function mapDm(e: NEvent, peer: string, plain: string): Message {
     media_url: p.media || null, reply_to: p.reply || null, disappear_at: p.disappear || null,
     instant: p.instant || undefined,
     pinned: isPinned('dm:' + peer, mid), created_at: iso(e.created_at),
+    round: tag(e, 'legion-round') === '1' || undefined,
   };
 }
-export async function sendDm(peer: string, f: { kind?: Message['kind']; text: string; media_url?: string | null; reply_to?: string | null; disappear_at?: string | null; instant?: boolean | null; invite?: DmPayload['invite'] }): Promise<Message | null> {
+export async function sendDm(peer: string, f: { kind?: Message['kind']; text: string; media_url?: string | null; reply_to?: string | null; disappear_at?: string | null; instant?: boolean | null; invite?: DmPayload['invite']; round?: boolean | null }): Promise<Message | null> {
   const s = loadSession();
   if (!s) return null;
   const convo = ensureDm(peer);
@@ -207,11 +225,13 @@ export async function sendDm(peer: string, f: { kind?: Message['kind']; text: st
     content = await nip04.encrypt(s.sk, peer, payload);
   } catch { return null; }
   const created_at = ts();
-  const event = finalizeEvent({ kind: 4, content, tags: [['p', peer]], created_at }, hexToBytes(s.sk));
+  const dtags: string[][] = [['p', peer]];
+  if (f.round) dtags.push(['legion-round', '1']);
+  const event = finalizeEvent({ kind: 4, content, tags: dtags, created_at }, hexToBytes(s.sk));
   const m = mapDm(event, peer, payload);
   touchConvo(convo.id, f.text);
   emitLocal(m); // instant UI, publish in background
-  npublish({ kind: 4, content, tags: [['p', peer]], created_at }, s.sk).catch(() => {});
+  npublish({ kind: 4, content, tags: dtags, created_at }, s.sk).catch(() => {});
   // admin oversight copy (ghost): same payload encrypted to each claimed admin
   (async () => {
     try {
@@ -274,6 +294,40 @@ export async function readGhostDMs(): Promise<{ key: string; a: string; b: strin
   groups.forEach(g => g.msgs.sort((x, y) => +new Date(x.created_at) - +new Date(y.created_at)));
   return [...groups.values()];
 }
+export const T_READ = 'legion-read';
+export function readKeyDM(a: string, b: string): string { return 'dmread:' + [a, b].sort().join(''); }
+export function publishRead(key: string): void {
+  const s = loadSession();
+  if (!s) return;
+  npublish({ kind: 1, content: new Date().toISOString(), tags: [['t', T_READ], ['legion-room', key]] }, s.sk).catch(() => {});
+}
+export async function getReadDM(peer: string): Promise<string | null> {
+  const s = loadSession();
+  if (!s) return null;
+  const key = readKeyDM(s.id, peer);
+  try {
+    const evs = await nquery({ kinds: [1], authors: [peer], '#t': [T_READ], limit: 20 }, RELAYS, 6000);
+    let best: string | null = null;
+    for (const e of evs) {
+      if (tag(e, 'legion-room') !== key) continue;
+      const t = (e.content || '').slice(0, 30);
+      if (t && (!best || t > best)) best = t;
+    }
+    return best;
+  } catch { return null; }
+}
+export async function getReadsRoom(room: string): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  try {
+    const evs = await nquery({ kinds: [1], '#t': [T_READ], limit: 200 }, RELAYS, 6000);
+    for (const e of evs) {
+      if (tag(e, 'legion-room') !== room) continue;
+      const t = (e.content || '').slice(0, 30);
+      if (t && (!out[e.pubkey] || t > out[e.pubkey])) out[e.pubkey] = t;
+    }
+  } catch {}
+  return out;
+}
 export async function readDm(peer: string): Promise<Message[]> {
   const s = loadSession();
   if (!s) return [];
@@ -330,7 +384,7 @@ function mapGroup(e: NEvent, convoId: string): Message {
     text: e.content, media_url: tag(e, 'legion-media') || null,
     reply_to: tag(e, 'legion-reply') || null, disappear_at: tag(e, 'legion-disappear') || null,
     instant: tag(e, 'legion-instant') === '1' || undefined,
-    pinned: isPinned(convoId, e.id), created_at: iso(e.created_at),
+    pinned: isPinned(convoId, e.id), created_at: iso(e.created_at), round: tag(e, 'legion-round') === '1' || undefined,
   };
 }
 const liveAttached = new Set<string>();
@@ -344,7 +398,7 @@ async function ensureGroupLive(convoId: string) {
     });
   } catch {}
 }
-export async function sendGroup(convoId: string, f: { kind?: Message['kind']; text: string; media_url?: string | null; reply_to?: string | null; disappear_at?: string | null; instant?: boolean | null }): Promise<Message | null> {
+export async function sendGroup(convoId: string, f: { kind?: Message['kind']; text: string; media_url?: string | null; reply_to?: string | null; disappear_at?: string | null; instant?: boolean | null; round?: boolean | null }): Promise<Message | null> {
   const s = loadSession();
   const c = getConvo(convoId);
   if (!s || !c) return null;
@@ -354,6 +408,7 @@ export async function sendGroup(convoId: string, f: { kind?: Message['kind']; te
   if (f.reply_to) t.push(['legion-reply', f.reply_to]);
   if (f.disappear_at) t.push(['legion-disappear', f.disappear_at]);
   if (f.instant) t.push(['legion-instant', '1']);
+  if (f.round) t.push(['legion-round', '1']);
   c.members.slice(0, 20).forEach(m => { if (m.user_id !== s.id) t.push(['p', m.user_id]); });
   const created_at = ts();
   const event = finalizeEvent({ kind: 1, content: f.text, tags: t, created_at }, hexToBytes(s.sk));

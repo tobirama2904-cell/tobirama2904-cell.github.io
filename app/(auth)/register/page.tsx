@@ -1,10 +1,10 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Copy, Check, Download } from 'lucide-react';
 import { supaBrowser } from '@/lib/supabase/client';
-import { exportNsec } from '@/lib/hybrid/identity';
+import { exportNsec, loadSession } from '@/lib/hybrid/identity';
 import { Button, Input } from '@/components/ui/primitives';
 
 export default function Register() {
@@ -17,6 +17,7 @@ export default function Register() {
   const [key, setKey] = useState('');
   const [copied, setCopied] = useState(false);
   const router = useRouter();
+  useEffect(() => { try { if (loadSession() && !done) router.replace('/chat'); } catch {} }, [router]);
 
   const reg = async () => {
     if (!name.trim() || !email.includes('@') || pass.length < 6) { setErr('Имя, корректный email и пароль от 6 символов'); return; }

@@ -10,21 +10,30 @@ export interface Session {
 }
 
 const K = 'legion-id-v1';
+const K2 = 'legion-id-backup-v1'; // redundant mirror
 const listeners = new Set<(s: Session | null) => void>();
 function emit(s: Session | null) { listeners.forEach(fn => { try { fn(s); } catch {} }); }
 
-export function loadSession(): Session | null {
+function parseSession(raw: string | null): Session | null {
   try {
-    const raw = localStorage.getItem(K);
     if (!raw) return null;
     const s = JSON.parse(raw) as Session;
     return s && s.id && s.sk ? s : null;
   } catch { return null; }
 }
+export function loadSession(): Session | null {
+  try {
+    const s = parseSession(localStorage.getItem(K));
+    if (s) return s;
+    const b = parseSession(localStorage.getItem(K2));
+    if (b) { try { localStorage.setItem(K, JSON.stringify(b)); } catch {} return b; }
+    return null;
+  } catch { return null; }
+}
 export function saveSession(s: Session | null) {
   try {
-    if (s) localStorage.setItem(K, JSON.stringify(s));
-    else localStorage.removeItem(K);
+    if (s) { const raw = JSON.stringify(s); localStorage.setItem(K, raw); localStorage.setItem(K2, raw); }
+    else { localStorage.removeItem(K); localStorage.removeItem(K2); }
   } catch {}
   emit(s);
 }

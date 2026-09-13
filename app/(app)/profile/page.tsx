@@ -23,7 +23,10 @@ function agnesKey(): string {
 }
 
 function Inner() {
-  const id = useSearchParams().get('id') || '';
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  const params = useSearchParams();
+  const id = mounted ? (params.get('id') || '') : '';
   const router = useRouter();
   const me = useStore(s => s.me);
   const logged = me && !me.guest;
@@ -171,6 +174,10 @@ function Inner() {
         </div>}
       </div>
     </div>
+    {!hiddenByPrivacy && (() => { const ph = posts.filter(x => x.image_url); return ph.length > 0 ? <>
+      <h2 className="font-bold mt-5 mb-2">Фото · {ph.length}</h2>
+      <div className="grid grid-cols-3 gap-1.5 mb-1">{ph.slice(0, 9).map(x => <img key={x.id} src={x.image_url!} alt="" loading="lazy" className="aspect-square w-full object-cover rounded-xl" />)}</div>
+    </> : null; })()}
     <h2 className="font-bold mt-5 mb-2">Посты · {posts.length}</h2>
     <div className="flex flex-col gap-2.5 pb-10">
       {hiddenByPrivacy && <Empty icon="🔒" title="Приватный профиль" sub="Подпишись, чтобы видеть посты" />}

@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { KeyRound, Send } from 'lucide-react';
 import { supaBrowser } from '@/lib/supabase/client';
-import { importKey, attachTelegram } from '@/lib/hybrid/identity';
+import { importKey, attachTelegram, loadSession } from '@/lib/hybrid/identity';
 import { tgBot } from '@/lib/hybrid/config';
 import { Button, Input } from '@/components/ui/primitives';
 
@@ -16,6 +16,7 @@ export default function Login() {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const router = useRouter();
+  useEffect(() => { try { if (loadSession()) router.replace('/chat'); } catch {} }, [router]);
   const tgRef = useRef<HTMLDivElement>(null);
   const [tgName, setTgName] = useState('');
   const [tgManual, setTgManual] = useState(false);

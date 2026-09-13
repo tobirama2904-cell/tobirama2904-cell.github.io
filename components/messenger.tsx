@@ -12,7 +12,8 @@ import {
   listConvos, ensureDm, createGroup, touchConvo, sendDm, sendGroup, sendNip29,
   listConvoMessages, subConvo, addMember, removeMember, listReacts, setReact, togglePin,
   listNip29, joinNip29, votePoll, getPollVotes, type ConvoEntry, type Nip29Group,
-  listLegionChannels, joinLegionChannel, type LegionChannel,
+  listLegionChannels, joinLegionChannel, joinRoomById, type LegionChannel,
+  readKeyDM, publishRead, getReadDM, getReadsRoom,
 } from '@/lib/hybrid/dm';
 import { directory, resolveAccount, getProfile } from '@/lib/hybrid/social';
 import type { Profile } from '@/lib/supabase/types';
@@ -47,6 +48,15 @@ export function Messenger() {
   const [active, setActive] = useState<string | null>(null);
   const [msgs, setMsgs] = useState<Message[]>([]);
   const [input, setInput] = useState('');
+  const inputRef = useRef('');
+  const DRAFTS_K = 'legion-drafts-v1';
+  const [readDmAt, setReadDmAt] = useState<string | null>(null);
+  const [roomReads, setRoomReads] = useState<Record<string, string>>({});
+  const rxThrottle = useRef<Record<string, number>>({});
+  const [recV, setRecV] = useState<MediaRecorder | null>(null);
+  const [recVStream, setRecVStream] = useState<MediaStream | null>(null);
+  const vPrevRef = useRef<HTMLVideoElement | null>(null);
+  const [copied, setCopied] = useState(false);
   const [typing, setTyping] = useState('');
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [reactTo, setReactTo] = useState<string | null>(null);
@@ -122,6 +132,29 @@ export function Messenger() {
       refreshConvos();
       setActive(c.id);
     }
+    const room = params.get('room');
+    if (room && /^[A-Za-z0-9:_-]{3,120}$/.test(room)) {
+      (async () => {
+        try {
+          const chs = await listLegionChannels();
+          const hit = chs.find(x => x.room === room);
+          if (hit) {
+            const e = joinLegionChannel(hit);
+            touchConvo(e.id, '');
+            refreshConvos();
+            setActive(e.id);
+            setInput(loadDraft(e.id)); inputRef.current = loadDraft(e.id);
+            return;
+          }
+        } catch {}
+        try {
+          const e = joinRoomById(room, 'group', '👥 Группа по ссылке');
+          touchConvo(e.id, '');
+          refreshConvos();
+          setActive(e.id);
+        } catch {}
+      })();
+    }
     const t = setInterval(refreshConvos, 5000);
     return () => clearInterval(t);
   }, [myPub, refreshConvos, params]);
@@ -175,6 +208,26 @@ export function Messenger() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [msgs]);
+  // read receipts: publish mine + fetch theirs (throttled)
+  useEffect(() => {
+    if (!active || !msgs.length || !myPub) return;
+    const now = Date.now();
+    if (now - (rxThrottle.current[active] || 0) < 15000 && msgs.length > 1) return;
+    rxThrottle.current[active] = now;
+    const c = (convos.find(x => x.id === active)) as ConvoEntry | undefined;
+    if (!c) return;
+    if (c.kind === 'dm') {
+      const peer = dmPeerOf(c);
+      if (!peer || peer === myPub) return;
+      publishRead(readKeyDM(myPub, peer));
+      getReadDM(peer).then(t => setReadDmAt(t)).catch(() => {});
+    } else {
+      publishRead(active);
+      getReadsRoom(active).then(r => setRoomReads(r)).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [msgs, active]);
+  useEffect(() => { setReadDmAt(null); setRoomReads({}); if (active) { const d = loadDraft(active); setInput(d); inputRef.current = d; } }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { bottom.current?.scrollIntoView(); }, [msgs.length]);
   // incoming calls
   useEffect(() => {
@@ -196,11 +249,11 @@ export function Messenger() {
   const activeConvo = convos.find(c => c.id === active) || null;
   const convoPeer = activeConvo ? dmPeerOf(activeConvo) : '';
   const convoName = (c: ConvoEntry) => {
-    if (c.kind === 'dm') { const p = dmPeerOf(c); return profOf(p)?.name || (p ? 'nostr:' + p.slice(0, 8) : 'Диалог'); }
+    if (c.kind === 'dm') { const p = dmPeerOf(c); if (p && p === myPub) return '⭐ Избранное'; return profOf(p)?.name || (p ? 'nostr:' + p.slice(0, 8) : 'Диалог'); }
     return c.title || 'Группа';
   };
   const convoAva = (c: ConvoEntry) => {
-    if (c.kind === 'dm') { const p = dmPeerOf(c); return profOf(p)?.avatar_url || c.avatar_url; }
+    if (c.kind === 'dm') { const p = dmPeerOf(c); if (p && p === myPub) return profOf(myPub)?.avatar_url || c.avatar_url; return profOf(p)?.avatar_url || c.avatar_url; }
     return c.avatar_url;
   };
   useEffect(() => {
@@ -208,7 +261,17 @@ export function Messenger() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convos.length]);
 
-  const sendRouter = async (cid: string, f: { kind?: Message['kind']; text: string; media_url?: string | null; reply_to?: string | null; disappear_at?: string | null; instant?: boolean | null }): Promise<Message | null> => {
+  const saveDraft = (cid: string, v: string) => {
+    try {
+      const all = JSON.parse(localStorage.getItem(DRAFTS_K) || '{}') as Record<string, string>;
+      if (v.trim()) all[cid] = v; else delete all[cid];
+      localStorage.setItem(DRAFTS_K, JSON.stringify(all));
+    } catch {}
+  };
+  const loadDraft = (cid: string): string => {
+    try { return ((JSON.parse(localStorage.getItem(DRAFTS_K) || '{}') as Record<string, string>)[cid] || ''); } catch { return ''; }
+  };
+  const sendRouter = async (cid: string, f: { kind?: Message['kind']; text: string; media_url?: string | null; reply_to?: string | null; disappear_at?: string | null; instant?: boolean | null; round?: boolean | null }): Promise<Message | null> => {
     const c = listConvos().find(x => x.id === cid);
     if (!c) return null;
     if (c.kind === 'dm') { const p = dmPeerOf(c); return p ? sendDm(p, f) : null; }
@@ -219,7 +282,7 @@ export function Messenger() {
     const body = input.trim();
     if ((!body && !replyTo) || !active) return;
     if (!body) return;
-    setInput(''); setReplyTo(null);
+    setInput(''); inputRef.current = ''; if (active) saveDraft(active, ''); setReplyTo(null);
     const dis = disappear > 0 ? new Date(Date.now() + disappear * 1000).toISOString() : null;
     const m = await sendRouter(active, { kind: 'text', text: body, reply_to: replyTo?.id || null, disappear_at: dis }).catch(() => null);
     if (!m) alert('Не отправлено — проверь сеть');
@@ -274,7 +337,7 @@ export function Messenger() {
     refreshConvos();
     setActive(cid);
   };
-  const upload = async (f: File, kind: 'image' | 'video' | 'file' | 'voice') => {
+  const upload = async (f: File, kind: 'image' | 'video' | 'file' | 'voice', opts?: { round?: boolean }) => {
     if (!active) return;
     setUpBusy(true);
     try {
@@ -286,7 +349,7 @@ export function Messenger() {
         url = await uploadFile(f);
       }
       const dis = instant ? new Date(Date.now() + 24 * 3600e3).toISOString() : null;
-      await sendRouter(active, { kind, text: instant ? '👁‍🔥 Мгновение' : (kind === 'file' ? `📎 ${f.name}` : f.name), media_url: url, disappear_at: dis, instant: instant || null });
+      await sendRouter(active, { kind, text: instant ? '👁‍🔥 Мгновение' : (kind === 'file' ? `📎 ${f.name}` : f.name), media_url: url, disappear_at: dis, instant: instant || null, round: opts?.round || null });
       if (instant) setInstantMode(false);
       refreshConvos();
     } catch {
@@ -306,6 +369,41 @@ export function Messenger() {
       setMsgs(prev => prev.filter(x => x.id !== m.id));
       setInstantOpen(prev => prev.filter(x => x !== m.id));
     }, 8000);
+  };
+  const openSaved = () => {
+    if (!myPub) return;
+    const c = ensureDm(myPub);
+    touchConvo(c.id, '');
+    refreshConvos();
+    setActive(c.id);
+  };
+  const shareRoom = async () => {
+    if (!activeConvo || activeConvo.kind === 'dm') return;
+    const url = (typeof location !== 'undefined' ? location.origin : 'https://tobirama2904-cell.github.io') + '/messages?room=' + activeConvo.id;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true); setTimeout(() => setCopied(false), 2000);
+    } catch { prompt('Скопируй ссылку-приглашение:', url); }
+  };
+  const toggleRecV = async () => {
+    if (recV) { recV.stop(); return; }
+    if (!active) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 480 }, height: { ideal: 480 } }, audio: true });
+      setRecVStream(stream);
+      const mr = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+      mr.ondataavailable = e => chunks.push(e.data);
+      mr.onstop = () => {
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        upload(new File([blob], `circle_${Date.now()}.webm`, { type: 'video/webm' }), 'video', { round: true });
+        stream.getTracks().forEach(t => t.stop());
+        setRecVStream(null); setRecV(null);
+      };
+      mr.start(); setRecV(mr);
+      setTimeout(() => { if (vPrevRef.current) vPrevRef.current.srcObject = stream; }, 50);
+      setTimeout(() => { try { if (mr.state !== 'inactive') mr.stop(); } catch {} }, 60000);
+    } catch { alert('Нет доступа к камере'); }
   };
   const toggleRec = async () => {
     if (rec) { rec.stop(); setRec(null); return; }
@@ -419,7 +517,13 @@ export function Messenger() {
       </div>
       {convos.length === 0 && <Empty icon="💬" title="Чатов нет" sub="Нажми «Новый чат» — там живые люди сети" />}
       <div className="flex flex-col gap-1 overflow-y-auto">
+        <button onClick={openSaved} className={`flex items-center gap-2.5 rounded-2xl p-2.5 text-left transition ${active === 'dm:' + myPub ? 'bg-blue-600 text-white shadow-lg' : 'glass hover:border-blue-500/40'}`}>
+          <Avatar src={profOf(myPub)?.avatar_url} name="⭐ Избранное" size={42} />
+          <div className="min-w-0 flex-1"><div className="font-bold text-sm truncate">⭐ Избранное</div>
+            <div className={`text-xs truncate ${active === 'dm:' + myPub ? 'text-white/70' : 'text-zinc-500'}`}>Сохраняй важное</div></div>
+        </button>
         {convos.map(c => {
+          if (c.kind === 'dm' && dmPeerOf(c) === myPub) return null;
           const peer = dmPeerOf(c);
           const isOnline = peer ? online.includes(peer) : false;
           return <button key={c.id} onClick={() => setActive(c.id)} className={`flex items-center gap-2.5 rounded-2xl p-2.5 text-left transition ${active === c.id ? 'bg-blue-600 text-white shadow-lg' : 'glass hover:border-blue-500/40'}`}>
@@ -486,7 +590,9 @@ export function Messenger() {
                   : <img src={m.media_url} alt="" className="rounded-xl max-h-64 mb-1" />)}
                 {m.kind === 'video' && m.media_url && !(m.instant && !mine && !instantOpen.includes(m.id)) && (isMagnet(m.media_url)
                   ? <button onClick={() => openTorrent(m.media_url!)} className="underline">🧲 P2P-видео (нажми чтобы загрузить)</button>
-                  : <video src={m.media_url} controls className="rounded-xl max-h-64 mb-1" />)}
+                  : (m.round
+                    ? <video src={m.media_url} autoPlay muted loop playsInline onClick={e => { const v = e.currentTarget; v.muted = !v.muted; if (v.paused) v.play(); }} title="Кружок — нажми для звука" className="size-44 rounded-full object-cover mb-1 cursor-pointer border-2 border-blue-500/50" />
+                    : <video src={m.media_url} controls className="rounded-xl max-h-64 mb-1" />))}
                 {m.kind === 'voice' && m.media_url && (isMagnet(m.media_url)
                   ? <button onClick={() => openTorrent(m.media_url!)} className="underline">🧲 P2P-голосовое</button>
                   : <audio src={m.media_url} controls className="max-w-56 mb-1" />)}
@@ -507,7 +613,7 @@ export function Messenger() {
                   <div className="text-[11px] opacity-70">голосов: {pv?.total || 0}</div>
                 </div> : m.kind !== 'file' && <span className="whitespace-pre-wrap break-words">{m.text}</span>}
                 {rc && <div className="flex gap-1 mt-1 flex-wrap">{Object.entries(rc).map(([e, v]) => <button key={e} onClick={() => react(m.id, e)} className={`text-xs rounded-full px-1.5 py-0.5 border ${v.mine ? 'border-blue-500 bg-blue-500/15' : 'border-zinc-300 dark:border-white/15'}`}>{e} {v.n}</button>)}</div>}
-                <div className={`text-[10px] mt-0.5 text-right ${mine ? 'text-white/60' : 'text-zinc-400'}`}>{m.pinned ? '📌 ' : ''}{fmtTime(m.created_at)}{m.disappear_at ? ' ⏳' : ''}</div>
+                <div className={`text-[10px] mt-0.5 text-right ${mine ? 'text-white/60' : 'text-zinc-400'}`}>{m.pinned ? '📌 ' : ''}{fmtTime(m.created_at)}{m.disappear_at ? ' ⏳' : ''}{mine && activeConvo?.kind === 'dm' && (readDmAt && m.created_at <= readDmAt ? <span className="text-sky-300 font-bold"> ✓✓</span> : <span> ✓</span>)}{mine && activeConvo && activeConvo.kind !== 'dm' && (() => { const n = Object.entries(roomReads).filter(([pub, t]) => pub !== myPub && t >= m.created_at).length; return n > 0 ? <span> 👁{n}</span> : null; })()}</div>
               </div>
               <div className="flex sm:hidden group-hover:flex gap-0.5 mt-0.5 ml-1">
                 <button onClick={() => setReactTo(reactTo === m.id ? null : m.id)} className="p-1.5 rounded-md hover:bg-zinc-200 dark:hover:bg-white/10 text-zinc-400"><Smile size={15} /></button>
@@ -532,10 +638,11 @@ export function Messenger() {
             <Paperclip size={17} /><input type="file" hidden onChange={e => { const f = e.target.files?.[0]; if (f) upload(f, f.type.startsWith('image') ? 'image' : f.type.startsWith('video') ? 'video' : f.type.startsWith('audio') ? 'voice' : 'file'); e.target.value = ''; }} />
           </label>
           <button onClick={toggleRec} className={`size-11 grid place-items-center rounded-xl border transition shrink-0 ${rec ? 'bg-rose-500 text-white border-rose-500 animate-pulse' : 'border-zinc-200 dark:border-white/10 hover:border-blue-500'}`} title="Голосовое"><Mic size={17} /></button>
+          <button onClick={toggleRecV} className={`size-11 grid place-items-center rounded-xl border transition shrink-0 ${recV ? 'bg-rose-500 text-white border-rose-500 animate-pulse' : 'border-zinc-200 dark:border-white/10 hover:border-blue-500'}`} title="Видео-кружок"><Video size={17} /></button>
           <button onClick={() => setPollOpen(true)} className="size-11 grid place-items-center rounded-xl border border-zinc-200 dark:border-white/10 hover:border-blue-500 transition shrink-0" title="Опрос"><BarChart3 size={17} /></button>
           <button onClick={() => setInstantMode(!instantMode)} className={`size-11 grid place-items-center rounded-xl border transition shrink-0 ${instantMode ? 'bg-orange-500 text-white border-orange-500' : 'border-zinc-200 dark:border-white/10 hover:border-orange-500'}`} title="Мгновение: следующее фото/видео сгорит после просмотра"><Flame size={17} /></button>
           <DictateButton onText={t => setInput(v => (v ? v + ' ' : '') + t)} />
-          <input value={input} onChange={e => { setInput(e.target.value); onType(); }} onKeyDown={e => e.key === 'Enter' && send()} placeholder="Сообщение…" className="flex-1 min-w-0 h-11 rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-4 outline-none focus:border-blue-500 font-medium" />
+          <input value={input} onChange={e => { const v = e.target.value; setInput(v); inputRef.current = v; if (active) saveDraft(active, v); onType(); }} onKeyDown={e => e.key === 'Enter' && send()} placeholder="Сообщение…" className="flex-1 min-w-0 h-11 rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-4 outline-none focus:border-blue-500 font-medium" />
           <Button size="icon" className="!size-11 !rounded-xl shrink-0" onClick={send}><Send size={17} /></Button>
         </div>
       </>}
@@ -571,6 +678,7 @@ export function Messenger() {
     {/* members dialog */}
     <Dialog open={showMembers} onOpenChange={setShowMembers} title="Участники">
       <div className="flex flex-col gap-1">
+        {activeConvo && activeConvo.kind !== 'dm' && <button onClick={shareRoom} className="h-10 rounded-xl bg-blue-600 text-white text-sm font-bold hover:bg-blue-500 transition mb-1">{copied ? '✓ Ссылка скопирована' : '🔗 Пригласить: скопировать ссылку'}</button>}
         {(activeConvo?.members || []).map(m => <div key={m.user_id} className="flex items-center gap-2.5 rounded-xl p-2">
           <Avatar src={profOf(m.user_id)?.avatar_url} name={profOf(m.user_id)?.name || '?'} size={32} />
           <b className="text-sm">{profOf(m.user_id)?.name || m.user_id.slice(0, 10)}{m.user_id === myPub ? ' (ты)' : ''}</b>
@@ -618,6 +726,12 @@ export function Messenger() {
       </div>
     </Dialog>
     {/* forward picker */}
+    <Dialog open={!!recV} onOpenChange={v => { if (!v && recV) recV.stop(); }} title="⏺ Видео-кружок">
+      <div className="flex flex-col items-center gap-3">
+        <video ref={vPrevRef} autoPlay muted playsInline className="size-56 rounded-full object-cover bg-black" />
+        <button onClick={() => recV?.stop()} className="h-11 px-6 rounded-xl bg-rose-500 text-white font-bold">⏹ Стоп и отправить</button>
+      </div>
+    </Dialog>
     <Dialog open={!!fwd} onOpenChange={v => !v && setFwd(null)} title="Переслать в…">
       <div className="flex flex-col gap-0.5 max-h-72 overflow-y-auto">
         {convos.filter(c => c.id !== active).map(c => <button key={c.id} onClick={() => doForward(c.id)} className="flex items-center gap-2.5 rounded-xl p-2 hover:bg-zinc-100 dark:hover:bg-white/5 text-left">
