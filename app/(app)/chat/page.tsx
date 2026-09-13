@@ -9,6 +9,7 @@ import { supaBrowser, isCloud } from '@/lib/supabase/client';
 import { useStore } from '@/lib/store';
 import type { Bot as BotT } from '@/lib/supabase/types';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
+import { DictateButton } from '@/components/dictate';
 
 function apiKey(): string {
   try { return localStorage.getItem('legion-agnes-key') || ''; } catch { return ''; }
@@ -42,6 +43,7 @@ function Thread({ bot, apiKey, meName }: { bot: BotT | null; apiKey: string; meN
     </div>
     <div className="mt-3 flex gap-2">
       <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder={apiKey ? 'Спроси…' : 'Спроси… (вставь ключ кнопкой выше для ответов)'} className="flex-1 h-12 rounded-2xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-4 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/15 transition font-medium" />
+      <DictateButton className="!size-12 !rounded-2xl" onText={t => setInput(v => (v ? v + ' ' : '') + t)} />
       <Button size="icon" className="!size-12 !rounded-2xl" onClick={send} disabled={busy}><Send size={18} /></Button>
     </div>
   </>;

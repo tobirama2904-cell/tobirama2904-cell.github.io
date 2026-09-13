@@ -8,7 +8,7 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   const u = new URL(e.request.url);
   if (u.origin !== self.location.origin) {
-    if (/gstatic|googleapis|supabase|agnes-ai/.test(u.hostname)) {
+    if (/gstatic|googleapis|agnes-ai|catbox|uguu/.test(u.hostname)) {
       e.respondWith(caches.open('legion-rt').then(c => c.match(e.request).then(h => h || fetch(e.request).then(r => { if (r.ok) c.put(e.request, r.clone()); return r; }).catch(() => h))));
     }
     return;

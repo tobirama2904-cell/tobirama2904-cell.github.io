@@ -10,6 +10,7 @@ import { timeAgo, uid } from '@/lib/utils';
 import { guestDB, saveGuest } from '@/lib/guest';
 import type { Post, Comment } from '@/lib/supabase/types';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
+import { DictateButton } from '@/components/dictate';
 
 export default function FeedPage() {
   const me = useStore(s => s.me);
@@ -139,6 +140,7 @@ export default function FeedPage() {
       <Textarea value={draft} onChange={e => setDraft(e.target.value)} placeholder={me && !me.guest ? `Что нового, ${me.name}?` : 'Что нового? (гость — посты только у тебя)'} rows={3} maxLength={2000} />
       {img && <div className="relative mt-2"><img src={img} alt="" className="rounded-xl max-h-52 w-full object-cover" /><button onClick={() => setImg('')} className="absolute top-2 right-2 size-7 grid place-items-center rounded-full bg-black/60 text-white text-sm">✕</button></div>}
       <div className="flex gap-2 mt-2.5">
+        <DictateButton className="!size-10 !rounded-xl" onText={t => setDraft(v => (v ? v + ' ' : '') + t)} />
         <Button onClick={publish} disabled={busy || !draft.trim()}>{busy ? '…' : 'Опубликовать'}</Button>
         <Button variant="outline" onClick={aiImprove} disabled={busy || !draft.trim()}><Sparkles size={15} /> Улучшить с AI</Button>
         <Button variant="outline" onClick={aiImage} disabled={busy || imgBusy || !draft.trim()}><ImagePlus size={15} /> {imgBusy ? 'Рисую…' : 'Картинка'}</Button>

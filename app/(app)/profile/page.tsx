@@ -1,5 +1,6 @@
 'use client';
-import { use, useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { BadgeCheck, UserPlus, UserMinus, Ban, MessageSquare, Pencil } from 'lucide-react';
 import { supaBrowser, isCloud } from '@/lib/supabase/client';
 import { useStore } from '@/lib/store';
@@ -8,8 +9,8 @@ import { Dialog } from '@/components/ui/overlays';
 import { timeAgo } from '@/lib/utils';
 import type { Profile, Post } from '@/lib/supabase/types';
 
-export default function ProfilePage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = use(params);
+function Inner() {
+  const id = useSearchParams().get('id') || 'guest';
   const me = useStore(s => s.me);
   const cloud = isCloud() && me && !me.guest;
   const [p, setP] = useState<Profile | null>(null);
@@ -18,6 +19,7 @@ export default function ProfilePage({ params }: { params: Promise<{ id: string }
   const [counts, setCounts] = useState({ followers: 0, following: 0 });
   const [edit, setEdit] = useState(false);
   const [form, setForm] = useState({ name: '', bio: '', status: '', avatar_url: '' });
+  const [isPrivate, setIsPrivate] = useState(false);
   const mine = cloud && me?.id === id;
   useEffect(() => {
     if (!cloud) {
@@ -27,7 +29,7 @@ export default function ProfilePage({ params }: { params: Promise<{ id: string }
     (async () => {
       const sb = supaBrowser();
       const { data } = await sb.from('profiles').select('*').eq('id', id).single();
-      if (data) { setP(data as never); setForm({ name: data.name, bio: data.bio || '', status: data.status || '', avatar_url: data.avatar_url || '' }); }
+      if (data) { setP(data as never); setForm({ name: data.name, bio: data.bio || '', status: data.status || '', avatar_url: data.avatar_url || '' }); setIsPrivate(!!data.is_private); }
       const { data: ps } = await sb.from('posts').select('*,author:profiles!posts_author_id_fkey(*)').eq('author_id', id).order('created_at', { ascending: false }).limit(20);
       setPosts((ps || []) as never[]);
       const [a, b, c] = await Promise.all([
@@ -49,7 +51,7 @@ export default function ProfilePage({ params }: { params: Promise<{ id: string }
   };
   const block = async () => { if (!cloud || !me || !confirm('Заблокировать?')) return; await supaBrowser().from('blocks').insert({ user_id: me.id, blocked_id: id }); alert('Заблокирован'); };
   const save = async () => {
-    await supaBrowser().from('profiles').update({ name: form.name, bio: form.bio, status: form.status, avatar_url: form.avatar_url || null }).eq('id', id);
+    await supaBrowser().from('profiles').update({ name: form.name, bio: form.bio, status: form.status, avatar_url: form.avatar_url || null, is_private: isPrivate }).eq('id', id);
     setEdit(false); location.reload();
   };
   const [genBusy, setGenBusy] = useState(false);
@@ -80,7 +82,7 @@ export default function ProfilePage({ params }: { params: Promise<{ id: string }
         <div className="flex gap-4 mt-2 text-sm font-bold"><span>{counts.followers} <span className="font-medium text-zinc-500">подписчиков</span></span><span>{counts.following} <span className="font-medium text-zinc-500">подписок</span></span></div>
         {!mine && cloud && <div className="flex gap-2 mt-3">
           <Button size="sm" onClick={toggleFollow}>{follow === 'none' ? <><UserPlus size={14} /> Подписаться</> : follow === 'mutual' ? <><UserMinus size={14} /> Взаимно · отписаться</> : <><UserMinus size={14} /> Отписаться</>}</Button>
-          <Button size="sm" variant="outline" onClick={() => location.href = '/messages'}><MessageSquare size={14} /> Написать</Button>
+          <Button size="sm" variant="outline" onClick={() => location.href = '/messages?dm=' + id}><MessageSquare size={14} /> Написать</Button>
           <Button size="sm" variant="outline" onClick={block} className="!text-rose-500"><Ban size={14} /></Button>
         </div>}
       </div>
@@ -93,9 +95,14 @@ export default function ProfilePage({ params }: { params: Promise<{ id: string }
     <Dialog open={edit} onOpenChange={setEdit} title="Редактировать профиль">
       <div className="flex flex-col gap-2.5">
         {([['name', 'Имя'], ['status', 'Статус'], ['avatar_url', 'URL аватара'], ['bio', 'О себе']] as [string, string][]).map(([k, l]) => <label key={k} className="text-xs font-bold text-zinc-500">{l}<input value={(form as Record<string, string>)[k]} onChange={e => setForm({ ...form, [k]: e.target.value })} className="mt-1 w-full h-10 rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 text-sm font-medium outline-none" /></label>)}
+        <label className="flex items-center gap-2 text-sm font-bold cursor-pointer"><input type="checkbox" checked={isPrivate} onChange={e => setIsPrivate(e.target.checked)} className="size-4 accent-blue-600" />🔒 Приватный профиль <span className="font-medium text-zinc-500 text-xs">(видят только подписчики)</span></label>
         <Button variant="outline" onClick={genAvatar} disabled={genBusy}>🎲 {genBusy ? 'Рисую…' : 'Сгенерировать аватар с AI'}</Button>
         <Button onClick={save}>Сохранить</Button>
       </div>
     </Dialog>
   </div>;
+}
+
+export default function ProfilePage() {
+  return <Suspense><Inner /></Suspense>;
 }

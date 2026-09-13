@@ -21,6 +21,7 @@ export default function AdminPage() {
   const [ann, setAnn] = useState({ title: '', body: '' });
   const [convos, setConvos] = useState<{ id: string; title: string; kind: string }[]>([]);
   const [audit, setAudit] = useState<{ text: string; sender_id: string; created_at: string }[]>([]);
+  const [auditId, setAuditId] = useState('');
   const [series, setSeries] = useState<{ d: string; msg: number }[]>([]);
 
   const load = useCallback(async () => {
@@ -43,7 +44,7 @@ export default function AdminPage() {
     ]);
     const days = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
     const buckets = Array.from({ length: 7 }, (_, i) => { const dt = new Date(Date.now() - (6 - i) * 864e3); return { key: dt.toDateString(), d: days[dt.getDay()], msg: 0 }; });
-    [...(pp.data || []), ...(mm.data || [])].forEach((r: never) => {
+    [...(pp.data || []), ...(mm.data || [])].forEach((r: any) => {
       const k = new Date((r as { created_at: string }).created_at).toDateString();
       const b = buckets.find(x => x.key === k); if (b) b.msg++;
     });
@@ -67,7 +68,7 @@ export default function AdminPage() {
     if (!ann.title.trim()) return;
     await supaBrowser().from('announcements').insert({ title: ann.title, body: ann.body });
     const { data: all } = await supaBrowser().from('profiles').select('id');
-    const rows = (all || []).slice(0, 2000).map(u => ({ user_id: u.id, kind: 'announce', title: '📢 ' + ann.title, body: ann.body.slice(0, 120) }));
+    const rows = (all || []).slice(0, 2000).map((u: any) => ({ user_id: u.id, kind: 'announce', title: '📢 ' + ann.title, body: ann.body.slice(0, 120) }));
     if (rows.length) {
       const { error } = await supaBrowser().from('notifications').insert(rows);
       if (error) { alert('Рассылка не удалась: ' + error.message); return; }
@@ -75,8 +76,13 @@ export default function AdminPage() {
     setAnn({ title: '', body: '' }); alert(`Объявление разослано (${rows.length})`);
   };
   const openAudit = async (id: string) => {
+    setAuditId(id);
     const { data } = await supaBrowser().from('messages').select('text,sender_id,created_at').eq('convo_id', id).order('created_at').limit(100);
     setAudit((data || []) as never[]);
+  };
+  const exportAudit = () => {
+    const md = `# Audit ${auditId} · ${new Date().toISOString()}\n\n` + audit.map(m => `- [${m.created_at}] ${m.sender_id}: ${m.text}`).join('\n');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([md], { type: 'text/markdown' })); a.download = `audit-${auditId.slice(0, 8)}.md`; a.click();
   };
   const f = q.toLowerCase();
   const shown = users.filter(u => !f || u.name.toLowerCase().includes(f) || u.email.toLowerCase().includes(f));
@@ -142,6 +148,7 @@ export default function AdminPage() {
         </div>
       </div>
       <div className="glass rounded-2xl p-3 max-h-[28rem] overflow-y-auto flex flex-col gap-1.5">
+        {audit.length > 0 && <Button size="sm" variant="outline" onClick={exportAudit} className="self-start">⬇ Экспорт .md</Button>}
         {audit.map((m, i) => <div key={i} className="text-[13px] rounded-xl bg-zinc-100 dark:bg-white/5 px-3 py-1.5"><span className="font-mono text-[10px] text-zinc-400">{m.sender_id.slice(0, 6)}</span> {m.text} <span className="text-[10px] text-zinc-400">{timeAgo(m.created_at)}</span></div>)}
         {audit.length === 0 && <Empty icon="👁" title="Выбери чат" />}
       </div>

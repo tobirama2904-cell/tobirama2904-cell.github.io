@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Mic, Volume2, Keyboard, Zap } from 'lucide-react';
 import { voice, micPermission, type VoiceState } from '@/lib/voice/engine';
 import { Button, Slider } from '@/components/ui/primitives';
@@ -13,12 +13,25 @@ export default function VoicePage() {
   const setVoiceOpen = useStore(s => s.setVoice);
   const push = (t: string) => setLog(l => [`[${new Date().toLocaleTimeString('ru-RU')}] ${t}`, ...l].slice(0, 40));
   const [voiceURI, setVoiceURI] = useState('');
+  const [dialog, setDialog] = useState(false);
+  const dialogRef = useRef(false);
   useEffect(() => {
     const v = voice();
     setSt(v.snapshot()); setVoices(v.listVoices()); setRate(v.rate); setVoiceURI(v.voiceURI);
     const off = [
       v.on('state', s => setSt({ ...s })),
-      v.on('final', t => push('🎙 «' + t + '»')),
+      v.on('final', async t => {
+        push('🎙 «' + t + '»');
+        if (!dialogRef.current) return;
+        try {
+          let key = ''; try { key = localStorage.getItem('legion-agnes-key') || ''; } catch {}
+          const r = await fetch('/api/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ apiKey: key || undefined, system: 'Ты LEGION, голосовой собеседник. Отвечай вслух: коротко, живо, по-русски, без списков и markdown.', prompt: t }) });
+          const j = await r.json();
+          if (j.text) { push('🤖 «' + j.text.slice(0, 120) + '»'); voice().speak(j.text); }
+          else push('⚠ AI молчит (нужен Agnes-ключ)');
+        } catch { push('⚠ Ошибка AI'); }
+      }),
       v.on('wake', () => push('👂 Wake word!')),
     ];
     push('Голосовой модуль готов (STT: ' + (v.sttOK ? 'да' : 'нет') + ')');
@@ -45,6 +58,7 @@ export default function VoicePage() {
         <Button onMouseDown={pttDown} onMouseUp={pttUp} onTouchStart={pttDown} onTouchEnd={pttUp} variant="ember" className="select-none touch-none">🔴 Держи — говори</Button>
         <Button variant="outline" onClick={() => setVoiceOpen(true)}><Keyboard size={15} /> Мини-панель</Button>
         <Button variant="outline" onClick={testTts}><Volume2 size={15} /> Тест озвучки</Button>
+        <Button variant={dialog ? 'default' : 'outline'} onClick={() => { const d = !dialog; setDialog(d); dialogRef.current = d; push(d ? '💬 Диалог с Легионом ВКЛ — говори, он ответит голосом' : '💬 Диалог ВЫКЛ'); }}>💬 Диалог</Button>
       </div>
       <div className="w-full grid sm:grid-cols-2 gap-3">
         <label className="text-xs font-bold text-zinc-500">Голос озвучки

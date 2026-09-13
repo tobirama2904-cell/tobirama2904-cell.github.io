@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Send, Mic, Paperclip, Phone, PhoneOff, Smile, Reply, Pin, Search, Plus, Sparkles, Languages, Timer, ArrowLeft, Users } from 'lucide-react';
+import { Send, Mic, Paperclip, Phone, PhoneOff, Smile, Reply, Pin, Search, Plus, Sparkles, Languages, Timer, ArrowLeft, Users, MessageSquare } from 'lucide-react';
 import { supaBrowser, isCloud } from '@/lib/supabase/client';
 import { useStore } from '@/lib/store';
 import { Avatar, Button, Empty } from './ui/primitives';
@@ -11,6 +11,9 @@ import { typingChannel } from '@/lib/realtime';
 import { CallClient, type CallState } from '@/lib/webrtc';
 import type { Conversation, Message } from '@/lib/supabase/types';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
+import { DictateButton } from './dictate';
+import { useSearchParams } from 'next/navigation';
+import { seedFile, fetchMagnet } from '@/lib/hybrid/torrent';
 
 const EMOJI = ['❤️', '👍', '🔥', '😂', '😮', '😢'];
 
@@ -29,6 +32,7 @@ export function Messenger() {
   const [disappear, setDisappear] = useState(0);
   const [showNew, setShowNew] = useState(false);
   const [groupName, setGroupName] = useState('');
+  const [newKind, setNewKind] = useState<'group' | 'channel'>('group');
   const [people, setPeople] = useState<{ id: string; name: string; avatar_url: string | null }[]>([]);
   const [callState, setCallState] = useState<CallState>('idle');
   const [peerName, setPeerName] = useState('');
@@ -176,16 +180,18 @@ export function Messenger() {
       mr.start(); setRec(mr);
     } catch { alert('Нет доступа к микрофону'); }
   };
-  const aiAction = async (mode: 'sum' | 'tr') => {
+  const aiAction = async (mode: 'sum' | 'tr' | 'ask') => {
+    const askQ = mode === 'ask' ? prompt('Вопрос Легиону по этой переписке:') : '';
+    if (mode === 'ask' && !askQ) return;
     if (aiBusy || msgs.length === 0) return;
     setAiBusy(true);
     try {
       let key = ''; try { key = localStorage.getItem('legion-agnes-key') || ''; } catch {}
       const convo = msgs.slice(-30).map(m => `${m.sender?.name || ''}: ${m.text}`).join('\n');
       const r = await fetch('/api/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: key || undefined, system: mode === 'sum' ? 'Сделай короткое саммари переписки по-русски: суть, решения, открытые вопросы.' : 'Переведи переписку на английский, сохраняя имена. Кратко.', prompt: convo.slice(0, 5000) }) });
+        body: JSON.stringify({ apiKey: key || undefined, system: mode === 'sum' ? 'Сделай короткое саммари переписки по-русски: суть, решения, открытые вопросы.' : mode === 'tr' ? 'Переведи переписку на английский, сохраняя имена. Кратко.' : 'Ответь на вопрос по переписке ниже, по-русски, коротко.', prompt: (mode === 'ask' ? `Вопрос: ${askQ}\n\nПереписка:\n` : '') + convo.slice(0, 5000) }) });
       const j = await r.json();
-      if (j.text) send('ai', (mode === 'sum' ? '📝 Саммари:\n' : '🌐 Перевод:\n') + j.text);
+      if (j.text) send('ai', (mode === 'sum' ? '📝 Саммари:\n' : mode === 'tr' ? '🌐 Перевод:\n' : '❓ Вопрос: ' + askQ + '\n\n') + j.text);
     } catch {}
     setAiBusy(false);
   };
@@ -205,7 +211,7 @@ export function Messenger() {
   const createGroup = async () => {
     if (!cloud || !me || !groupName.trim()) return;
     const sb = supaBrowser();
-    const { data: c } = await sb.from('conversations').insert({ kind: 'group', title: groupName.trim(), owner_id: me.id }).select().single();
+    const { data: c } = await sb.from('conversations').insert({ kind: newKind, title: groupName.trim(), owner_id: me.id }).select().single();
     if (c) { await sb.from('convo_members').insert({ convo_id: c.id, user_id: me.id, role: 'owner' }); setGroupName(''); setShowNew(false); loadConvos(); setActive(c.id); setShowMembers(true); }
   };
   const loadPeople = async () => {
@@ -267,6 +273,7 @@ export function Messenger() {
             })()} className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-white/10 text-emerald-500"><Phone size={17} /></button>
             <button title="Поиск" onClick={() => setShowSearch(!showSearch)} className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-white/10 text-zinc-500"><Search size={17} /></button>
             <button title="Саммари от AI" onClick={() => aiAction('sum')} className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-white/10 text-violet-500"><Sparkles size={17} /></button>
+            <button title="Спросить Легиона" onClick={() => aiAction('ask')} className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-white/10 text-violet-500"><MessageSquare size={17} /></button>
             <button title="Перевод" onClick={() => aiAction('tr')} className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-white/10 text-blue-500"><Languages size={17} /></button>
             <button title="Исчезающие" onClick={() => { const v = disappear ? 0 : 60; setDisappear(v); }} className={`p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-white/10 ${disappear ? 'text-amber-500' : 'text-zinc-500'}`}><Timer size={17} /></button>
           </>}
@@ -316,6 +323,7 @@ export function Messenger() {
             <Paperclip size={17} /><input type="file" hidden onChange={e => { const f = e.target.files?.[0]; if (f) upload(f, f.type.startsWith('image') ? 'image' : f.type.startsWith('video') ? 'video' : 'file'); e.target.value = ''; }} />
           </label>
           <button onClick={toggleRec} className={`size-11 grid place-items-center rounded-xl border transition ${rec ? 'bg-rose-500 text-white border-rose-500 animate-pulse' : 'border-zinc-200 dark:border-white/10 hover:border-blue-500'}`} title="Голосовое"><Mic size={17} /></button>
+          <DictateButton onText={t => setInput(v => (v ? v + ' ' : '') + t)} />
           <input value={input} onChange={e => { setInput(e.target.value); onType(); }} onKeyDown={e => e.key === 'Enter' && send()} placeholder="Сообщение…" className="flex-1 h-11 rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-4 outline-none focus:border-blue-500 font-medium" />
           <Button size="icon" className="!size-11 !rounded-xl" onClick={() => send()}><Send size={17} /></Button>
         </div>
@@ -324,8 +332,11 @@ export function Messenger() {
     <Dialog open={showNew} onOpenChange={setShowNew} title="Новый чат">
       <div className="flex flex-col gap-1">
         <div className="flex gap-2 mb-2">
-          <input value={groupName} onChange={e => setGroupName(e.target.value)} placeholder="Название группы…" className="flex-1 h-9 rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 text-sm outline-none" />
-          <Button size="sm" onClick={createGroup} disabled={!groupName.trim()}>👥 Группа</Button>
+          <select value={newKind} onChange={e => setNewKind(e.target.value as 'group' | 'channel')} className="h-9 rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-2 text-sm font-bold outline-none">
+            <option value="group">👥 Группа</option><option value="channel">📣 Канал</option>
+          </select>
+          <input value={groupName} onChange={e => setGroupName(e.target.value)} placeholder={newKind === 'group' ? 'Название группы…' : 'Название канала…'} className="flex-1 h-9 rounded-xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 text-sm outline-none" />
+          <Button size="sm" onClick={createGroup} disabled={!groupName.trim()}>Создать</Button>
         </div>
         <div className="text-[11px] font-bold text-zinc-400 mb-1">ЛИЧНЫЕ СООБЩЕНИЯ</div>
         {people.map(p => <button key={p.id} onClick={() => openDm(p.id)} className="flex items-center gap-2.5 rounded-xl p-2 hover:bg-zinc-100 dark:hover:bg-white/5 text-left"><Avatar src={p.avatar_url} name={p.name} size={36} /><b className="text-sm">{p.name}</b></button>)}

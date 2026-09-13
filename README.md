@@ -1,24 +1,29 @@
-# LEGION v19 — AI-соцсеть
+# LEGION v20 — AI-соцсеть на гибридных рельсах
 
-Мессенджер + соцсеть + личный ИИ-агент с голосовым управлением. Next.js 19, всё бесплатно.
+Мессенджер + соцсеть + личный ИИ-агент с голосовым управлением. Ноль серверов, всё бесплатно и безлимитно.
 
-## Стек
-Next.js 15 · React 19 · TypeScript · Tailwind v4 · Radix/shadcn · Framer Motion · GSAP · Lottie · AutoAnimate · Three.js/Fiber/Drei · Recharts · ECharts · Vercel AI SDK · CopilotKit · Mastra · assistant-ui · Supabase · Lucide
+**Живой сайт:** https://tobirama2904-cell.github.io/
+
+## Как устроено (без серверов)
+- Аккаунты — Nostr-ключи (email+пароль детерминированно, импорт nsec, Telegram-вход)
+- Лента, профили, лайки, подписки, сторис — Nostr-релеи (multi-relay)
+- Личка — шифрованный NIP-04 · Группы/каналы — Nostr-лог + живые P2P-комнаты · Публичные группы — NIP-29
+- Звонки — WebRTC P2P · Файлы/аватары/голосовые — бесплатные хосты + Telegram · Большие файлы — торренты в браузере
+- ИИ — Agnes напрямую из браузера · Хостинг — статика (GitHub/Cloudflare Pages, безлимит)
 
 ## Запуск
 ```bash
 npm install
-cp .env.example .env.local   # вставь Supabase + Agnes ключи (см. SETUP.md)
-npm run dev                  # http://localhost:3000
+npm run dev   # http://localhost:3000 — работает сразу, без ключей и env
 ```
-Без Supabase работает гостевой режим (AI-чат с ключом, студия, память локально).
 
 ## Деплой
-Vercel → Import из GitHub → вставь env → Deploy. Подробнее: SETUP.md.
+```bash
+npm run build  # -> out/ (статика)
+```
+Залей `out/` на GitHub Pages или Cloudflare Pages. Подробнее: SETUP.md.
 
 ## Структура
-- `app/(marketing)` — лендинг · `app/(auth)` — вход/регистрация · `app/(app)` — сеть
-- `app/api` — chat (AI SDK stream), copilotkit, ai (one-shot), moderate, digest
-- `lib/voice` — Voice SDK (STT/TTS/wake/команды) · `lib/webrtc` — звонки · `lib/mastra` — агент
-- `components/glint` — GlintKit (магнит, блик, бегушка, счётчики, tilt)
-- `supabase/migrations` — SQL схема + RLS
+- `app/(app)` — сеть · `app/(auth)` — вход/регистрация · лендинг — `/`
+- `lib/hybrid/` — движок: identity, nostr/social, dm, live, calls, storage, torrent, ai, notify
+- `lib/supabase/client.ts` — совместимый слой данных (весь UI работает поверх гибрида)

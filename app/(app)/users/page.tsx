@@ -34,7 +34,7 @@ export default function UsersPage() {
       </div>
     </div>
     <div className="flex flex-col gap-2">
-      {shown.map(p => <Link key={p.id} href={`/profile/${p.id}`} className="glass rounded-2xl p-3 flex items-center gap-3 card-hover">
+      {shown.map(p => <Link key={p.id} href={`/profile?id=${p.id}`} className="glass rounded-2xl p-3 flex items-center gap-3 card-hover">
         <div className="relative"><Avatar src={p.avatar_url} name={p.name} size={44} />{online.includes(p.id) && <span className="absolute bottom-0 right-0 size-3.5 rounded-full bg-emerald-500 border-2 border-white dark:border-zinc-950" />}</div>
         <div className="min-w-0 flex-1"><div className="font-bold text-sm flex items-center gap-1">{p.name} {p.verified && <BadgeCheck size={15} className="text-blue-500" />} {p.role === 'admin' && <span className="text-[10px] bg-amber-500/15 text-amber-500 px-1.5 py-0.5 rounded font-bold">ADMIN</span>}</div>
           <div className="text-xs text-zinc-500 truncate">{p.status || p.bio || '—'}</div></div>
